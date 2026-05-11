@@ -12,7 +12,17 @@ When the request is to "update documentation", the expected scope in this projec
 
 ## Project Summary
 
-This repository implements a local chat application with RAG:
+This branch is a rebuild branch for experimenting with a LangChain/LangGraph-style backend.
+
+The original local chat application with RAG has been intentionally hollowed out in `server.py`. The current active backend is only a FastAPI endpoint shell with request models and `pass` bodies. It is expected to fail functionally until the new implementation is rebuilt.
+
+The pre-rebuild backend was copied to:
+
+- `server_legacy.py`
+
+Use `server_legacy.py` as the reference for the previous behavior, data flow, endpoints, permissions, persistence rules, and RAG pipeline. Do not treat it as active runtime code unless the user explicitly asks to restore or port from it.
+
+The original system implemented:
 
 - FastAPI backend.
 - Static frontend in `ui/*.html`.
@@ -22,7 +32,7 @@ This repository implements a local chat application with RAG:
 - Chat audit logs in `logs/chat_audit/`.
 - Ollama integration for generation and auxiliary tasks.
 
-Most of the business logic currently lives in `server.py`.
+The rebuild goal is to replace the monolithic backend with a cleaner architecture, likely centered around LangChain/LangGraph or a similarly explicit pipeline, while preserving the local/offline-first nature of the app.
 
 ## Working Principles
 
@@ -37,8 +47,13 @@ Most of the business logic currently lives in `server.py`.
 
 - `server.py`
   - Main application entry point.
-  - Contains auth, conversations, chat, files, indexing, retrieval, and auditing.
-  - If new logic is added, keep it well scoped even if it still lives in this file.
+  - In this branch, it is intentionally reduced to endpoint stubs.
+  - Keep it as the HTTP boundary and avoid rebuilding the entire monolith inside it.
+
+- `server_legacy.py`
+  - Frozen reference copy of the pre-rebuild backend.
+  - Contains the old auth, conversations, chat, files, indexing, retrieval, inconsistency detection, and auditing logic.
+  - Port behavior from here intentionally and incrementally; do not casually edit it.
 
 - `prompts.py`
   - Canonical location for active system prompts.
@@ -75,6 +90,7 @@ Most of the business logic currently lives in `server.py`.
 
 Before touching a feature:
 
+- check whether the behavior exists only in `server_legacy.py`;
 - locate the backend endpoint involved;
 - locate the HTML screen that consumes it;
 - review whether there is persisted state in SQLite, JSON indexes, or files on disk;
@@ -128,10 +144,12 @@ Practical rule:
 ## Implementation Conventions
 
 - Prefer pragmatic solutions over overengineering.
-- If a change can be isolated in a helper function, do it.
+- Build the new backend in small modules instead of recreating a large `server.py`.
+- If a change can be isolated in a helper function or module, do it.
 - If a text or rule is hard to locate, move it to a canonical place.
 - Keep names consistent with the current domain: `global`, `mine`, `owner_id`, `role`, `is_active`, and so on.
 - Do not introduce empty abstractions such as managers or state-less classes if simple functions are enough.
+- If adding LangChain or LangGraph, keep framework integration behind a thin internal boundary so endpoint code remains easy to read and test.
 
 ## UX And Frontend
 
@@ -145,15 +163,14 @@ Practical rule:
 Recommended workflow:
 
 - use the local `.venv`;
-- start with `run.bat` on Windows;
-- run automated smoke tests with:
-  - `.\.venv\Scripts\python.exe -m unittest discover -s tests`
+- expect functional endpoint tests from the legacy app to fail until endpoints are rebuilt;
 - validate quick syntax with:
-  - `.\.venv\Scripts\python.exe -m py_compile server.py prompts.py`
+  - `.\.venv\Scripts\python.exe -m py_compile server.py prompts.py server_legacy.py`
+- when a rebuilt endpoint becomes functional, add or update focused tests for that endpoint before relying on manual UI checks.
 
 Current automated tests:
 
-- `tests/test_permissions.py` covers role-based backend restrictions for `read_only` users and global RAG management by non-admin users. It uses a temporary SQLite database and does not modify `emma.db`.
+- `tests/test_permissions.py` was written for the pre-rebuild backend contract. In this branch it documents intended permission behavior, but it is not expected to pass while `server.py` endpoints are still stubs.
 
 Useful manual smoke tests after changes:
 
@@ -178,11 +195,21 @@ These debt items may exist consciously and should not be "fixed" without alignin
 
 Recommended order to understand it:
 
-1. Read `server.py` to locate endpoints, auth, and the chat flow.
-2. Read `prompts.py` to understand model behavior.
-3. Review `ui/index.html`, `ui/chat.html`, `ui/upload.html`, and `ui/admin.html`.
-4. Confirm the real schema in `emma.db`.
-5. Review `files/`, `chunks/`, and `logs/chat_audit/` to understand auxiliary persistence.
+1. Read `server.py` to see the active endpoint shell.
+2. Read `server_legacy.py` to understand the previous behavior and data flow.
+3. Read `prompts.py` to understand model behavior that may still be worth preserving.
+4. Review `ui/index.html`, `ui/chat.html`, `ui/upload.html`, and `ui/admin.html` to understand frontend expectations.
+5. Confirm the real schema in `emma.db`.
+6. Review `files/`, `chunks/`, and `logs/chat_audit/` to understand auxiliary persistence.
+
+Suggested rebuild order:
+
+1. Restore auth and `/auth/me`.
+2. Restore admin/user role enforcement.
+3. Restore conversation persistence.
+4. Add the new model/RAG pipeline boundary.
+5. Rebuild upload, indexing, retrieval, and chat in small slices.
+6. Re-enable or rewrite tests as each slice returns.
 
 ## General Criterion
 
@@ -190,5 +217,6 @@ The best contribution in this project is usually to:
 
 - make important things easier to find;
 - harden backend behavior before polishing frontend behavior;
+- port legacy behavior deliberately instead of copying the old monolith back into place;
 - reduce surprises;
 - and leave each change easier to understand than before.
