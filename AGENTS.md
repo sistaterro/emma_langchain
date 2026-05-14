@@ -12,15 +12,15 @@ When the request is to "update documentation", the expected scope in this projec
 
 ## Project Summary
 
-This branch is a rebuild branch for experimenting with a LangChain/LangGraph-style backend.
+This branch is a rebuild branch for a LangChain-centered backend.
 
-The original local chat application with RAG has been intentionally hollowed out in `server.py`. The current active backend is only a FastAPI endpoint shell with request models and `pass` bodies. It is expected to fail functionally until the new implementation is rebuilt.
+The active backend in `server.py` has been partially rebuilt. It now includes auth, role enforcement, user management, conversation persistence, file upload/delete/download, RAG chunk ingestion, inconsistency detection, provider/model selection, and chat generation through LangChain chat model integrations.
 
 The pre-rebuild backend was copied to:
 
 - `server_legacy.py`
 
-Use `server_legacy.py` as the reference for the previous behavior, data flow, endpoints, permissions, persistence rules, and RAG pipeline. Do not treat it as active runtime code unless the user explicitly asks to restore or port from it.
+Use `server_legacy.py` only as a historical reference for previous behavior, data flow, endpoints, permissions, persistence rules, and the old RAG pipeline. It is not active runtime code and does not need to be preserved indefinitely.
 
 The original system implemented:
 
@@ -28,11 +28,11 @@ The original system implemented:
 - Static frontend in `ui/*.html`.
 - Main persistence in SQLite (`emma.db`).
 - Source RAG files in `files/`.
-- Chunks and embeddings in `chunks/`.
+- Chunks in `chunks/`.
 - Chat audit logs in `logs/chat_audit/`.
-- Ollama integration for generation and auxiliary tasks.
+- LangChain chat model integrations for Gemini, OpenAI/GPT, and Anthropic/Sonnet generation.
 
-The rebuild goal is to replace the monolithic backend with a cleaner architecture, likely centered around LangChain/LangGraph or a similarly explicit pipeline, while preserving the local/offline-first nature of the app.
+The rebuild goal is to keep endpoint behavior explicit while moving model calls behind a thin LangChain boundary. The app remains local-first for persistence and RAG storage, but generation can use configured external model APIs.
 
 ## Working Principles
 
@@ -47,18 +47,19 @@ The rebuild goal is to replace the monolithic backend with a cleaner architectur
 
 - `server.py`
   - Main application entry point.
-  - In this branch, it is intentionally reduced to endpoint stubs.
-  - Keep it as the HTTP boundary and avoid rebuilding the entire monolith inside it.
+  - Active FastAPI backend.
+  - Contains the current rebuilt auth, permissions, conversations, file management, RAG chunking, inconsistency detection, model catalog, LangChain provider factory, and chat endpoint.
+  - Keep it as the HTTP boundary. If future changes grow large, move cohesive pieces into small modules instead of expanding it indefinitely.
 
 - `server_legacy.py`
-  - Frozen reference copy of the pre-rebuild backend.
+  - Historical reference copy of the pre-rebuild backend.
   - Contains the old auth, conversations, chat, files, indexing, retrieval, inconsistency detection, and auditing logic.
-  - Port behavior from here intentionally and incrementally; do not casually edit it.
+  - Do not treat it as active code. It may be deleted later once the rebuild has enough coverage and confidence.
 
 - `prompts.py`
   - Canonical location for active system prompts.
-  - Use pure functions such as `build_*_prompt(...)`.
-  - Avoid embedding long prompts back into `server.py`.
+  - Currently contains only active prompts: `build_inconsistency_prompt(...)` and `build_rag_prompt(...)`.
+  - Do not reintroduce legacy routing prompts for "most relevant" files unless the RAG strategy changes again.
 
 - `ui/index.html`
   - Main home screen.
@@ -66,10 +67,12 @@ The rebuild goal is to replace the monolithic backend with a cleaner architectur
 
 - `ui/chat.html`
   - Main chat client.
+  - Uses the backend-provided model catalog and sends the selected model id to `/chat`.
   - Pay close attention to local state, rendering, and DOM cleanup when deleting or recreating conversations.
 
 - `ui/upload.html`
   - RAG management screen.
+  - Shows indexed chunks and persisted inconsistency results from `/files`.
   - The frontend may hide options by role, but the backend must remain the source of truth.
 
 - `ui/admin.html`
@@ -83,6 +86,22 @@ The rebuild goal is to replace the monolithic backend with a cleaner architectur
 - `run.bat`
   - Windows startup script.
   - Should separate environment validation from execution as much as possible.
+
+- `test.bat`
+  - Windows test sequencer.
+  - Runs syntax checks and the full unittest suite.
+
+- `api_keys.json`
+  - Local secret file for model provider API keys.
+  - Ignored by Git. Do not print, commit, or expose its contents to the frontend.
+  - Expected shape:
+    ```json
+    {
+      "gemini": { "api_key": "..." },
+      "openai": { "api_key": "..." },
+      "anthropic": { "api_key": "..." }
+    }
+    ```
 
 ## Programming Methodology
 
@@ -120,9 +139,11 @@ Recommended convention:
 
 - constants for shared rules;
 - builder functions for dynamic prompts;
-- clear names such as `build_rag_prompt`, `build_route_prompt`, `build_safety_prompt`.
+- clear names such as `build_rag_prompt` and `build_inconsistency_prompt`.
 
 Avoid prompt classes without real state.
+
+Current RAG strategy deliberately does not route to "probable" files or select top-k chunks. Chat loads all visible chunks and lets the selected model reason over the full visible context.
 
 ### 4. Protect Visual State
 
@@ -144,12 +165,16 @@ Practical rule:
 ## Implementation Conventions
 
 - Prefer pragmatic solutions over overengineering.
-- Build the new backend in small modules instead of recreating a large `server.py`.
+- Prefer small cohesive modules for future expansion. `server.py` is currently functional but large.
 - If a change can be isolated in a helper function or module, do it.
 - If a text or rule is hard to locate, move it to a canonical place.
 - Keep names consistent with the current domain: `global`, `mine`, `owner_id`, `role`, `is_active`, and so on.
 - Do not introduce empty abstractions such as managers or state-less classes if simple functions are enough.
 - If adding LangChain or LangGraph, keep framework integration behind a thin internal boundary so endpoint code remains easy to read and test.
+- Model generation should go through `generate_ai_reply(...)` and the LangChain model factory. Do not call provider REST APIs directly from endpoint code.
+- Keep API keys server-side only. `/health` may report available providers/models, but must never return secret values.
+- RAG ingestion writes chunks as JSON only. Embeddings and `.npy` files are not part of the current rebuilt flow.
+- Inconsistency detection is asynchronous after upload and persisted in `conflicts_index.json`; UI should poll `/files` instead of relying only on the immediate upload response.
 
 ## UX And Frontend
 
@@ -163,24 +188,31 @@ Practical rule:
 Recommended workflow:
 
 - use the local `.venv`;
-- expect functional endpoint tests from the legacy app to fail until endpoints are rebuilt;
-- validate quick syntax with:
+- run the test sequencer before handing off backend changes:
+  - `.\test.bat`
+- or run the suite manually:
+  - `.\.venv\Scripts\python.exe -m unittest discover tests`
+- validate quick syntax manually when needed:
   - `.\.venv\Scripts\python.exe -m py_compile server.py prompts.py server_legacy.py`
-- when a rebuilt endpoint becomes functional, add or update focused tests for that endpoint before relying on manual UI checks.
+- tests must mock external model/server calls. Do not make Gemini/OpenAI/Anthropic calls from automated tests.
 
 Current automated tests:
 
-- `tests/test_permissions.py` was written for the pre-rebuild backend contract. In this branch it documents intended permission behavior, but it is not expected to pass while `server.py` endpoints are still stubs.
+- `tests/test_permissions.py` covers role restrictions for admin/file-management behavior.
+- `tests/test_rag_pipeline.py` covers chunk ingestion, file indexes, mocked inconsistency persistence, and chat prompt construction with all visible chunks.
+- `tests/test_core_endpoints.py` covers auth, admin user management, conversation CRUD, file upload/list/download/delete, model catalog behavior, and LangChain missing-dependency errors.
 
 Useful manual smoke tests after changes:
 
 - login with `admin`, `user`, and `read_only`;
 - correct card visibility in `index.html`;
 - upload and delete of user-owned RAGs;
+- upload two contradictory RAGs and confirm `upload.html` shows conflicts after polling;
 - `read_only` restrictions;
 - user management from admin;
 - chat creation, deletion, and recreation;
-- index consistency when a file is deleted.
+- ask chat a question that requires multiple RAGs and confirm it answers from all visible chunks;
+- index and conflict consistency when a file is deleted.
 
 ## Known Technical Debt
 
@@ -190,26 +222,38 @@ These debt items may exist consciously and should not be "fixed" without alignin
 - `server.py` remains monolithic;
 - parts of the admin UI may still need cleanup;
 - `emma.db` often reflects local working state, not only schema.
+- FastAPI `@app.on_event("startup")` emits a deprecation warning during tests; migrate to lifespan when convenient.
+- Streaming currently wraps the full model response into JSON-line chunks after generation rather than streaming provider tokens directly.
+- `server_legacy.py` still exists only as reference and can be removed later.
 
 ## What To Do When Inheriting This Repo
 
 Recommended order to understand it:
 
-1. Read `server.py` to see the active endpoint shell.
-2. Read `server_legacy.py` to understand the previous behavior and data flow.
-3. Read `prompts.py` to understand model behavior that may still be worth preserving.
+1. Read `server.py` to see the active backend flow.
+2. Read `prompts.py` to understand active model behavior.
+3. Read `tests/` to understand the intended current contract.
 4. Review `ui/index.html`, `ui/chat.html`, `ui/upload.html`, and `ui/admin.html` to understand frontend expectations.
 5. Confirm the real schema in `emma.db`.
 6. Review `files/`, `chunks/`, and `logs/chat_audit/` to understand auxiliary persistence.
+7. Consult `server_legacy.py` only if you need historical context.
 
-Suggested rebuild order:
+Current rebuild status:
 
-1. Restore auth and `/auth/me`.
-2. Restore admin/user role enforcement.
-3. Restore conversation persistence.
-4. Add the new model/RAG pipeline boundary.
-5. Rebuild upload, indexing, retrieval, and chat in small slices.
-6. Re-enable or rewrite tests as each slice returns.
+1. Auth and `/auth/me`: rebuilt.
+2. Admin/user role enforcement: rebuilt.
+3. Conversation persistence: rebuilt.
+4. Provider/model selection: rebuilt using LangChain integrations.
+5. Upload, chunk ingestion, and inconsistency detection: rebuilt.
+6. Chat: rebuilt using all visible chunks instead of legacy top-k retrieval.
+7. Tests: active and expected to pass.
+
+Likely next work:
+
+- split `server.py` into small modules once behavior stabilizes;
+- migrate startup to FastAPI lifespan;
+- decide whether to remove `server_legacy.py`;
+- improve direct provider-token streaming if needed.
 
 ## General Criterion
 

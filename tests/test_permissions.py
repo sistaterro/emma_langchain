@@ -35,8 +35,10 @@ class PermissionSmokeTests(unittest.TestCase):
 
         self.server.DB_PATH = root / "emma.db"
         self.server.LOGS_DIR = root / "logs" / "chat_audit"
-        self.server.GLOBAL_FILES_DIR = root / "files" / "global"
-        self.server.GLOBAL_CHUNKS_DIR = root / "chunks" / "global"
+        self.server.FILES_ROOT = root / "files"
+        self.server.CHUNKS_ROOT = root / "chunks"
+        self.server.GLOBAL_FILES_DIR = self.server.FILES_ROOT / "global"
+        self.server.GLOBAL_CHUNKS_DIR = self.server.CHUNKS_ROOT / "global"
 
         self.server.init_db()
         self.client = TestClient(self.server.app)

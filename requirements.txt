@@ -15,6 +15,11 @@ huggingface_hub==1.7.2
 idna==3.11
 Jinja2==3.1.6
 joblib==1.5.3
+langchain
+langchain-anthropic
+langchain-core
+langchain-google-genai
+langchain-openai
 markdown-it-py==4.0.0
 MarkupSafe==3.0.3
 mdurl==0.1.2

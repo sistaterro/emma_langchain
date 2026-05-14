@@ -1101,6 +1101,43 @@
       renderAlerts();
     }
 
+    function renderConflictDetails(inconsistencies) {
+      if (!inconsistencies || !inconsistencies.has_any) return '';
+      return `
+        <div class="alert-claims" style="margin-top:10px">
+          ${(inconsistencies.matches || []).map(match => `
+            <div class="alert-item" style="box-shadow:none">
+              <div class="alert-title">
+                <span>Conflict with ${escHtml(match.name || 'unknown')}</span>
+                <div class="alert-tags">
+                  <span class="alert-tag scope-${match.scope || 'user'}">${match.scope === 'global' ? 'GLOBAL' : 'MINE'}</span>
+                  ${match.similarity ? `<span class="alert-tag sev-medium">${Math.round(match.similarity * 100)}% match</span>` : ''}
+                </div>
+              </div>
+              <div class="alert-summary">${escHtml(match.summary || 'Possible factual conflicts detected')}</div>
+              ${(match.items || []).map(item => `
+                <div class="alert-claim">
+                  <div><strong>${escHtml(item.topic || 'Possible conflict')}</strong> <span class="alert-tag sev-${item.severity || 'medium'}">${severityLabel(item.severity)}</span></div>
+                  <div><strong>New:</strong> ${escHtml(item.new_claim || '')}</div>
+                  <div><strong>Existing:</strong> ${escHtml(item.existing_claim || '')}</div>
+                </div>
+              `).join('')}
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    async function pollIndexedAfterUpload(attempts = 8, delayMs = 2500) {
+      for (let i = 0; i < attempts; i++) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        await loadIndexed();
+        const hasIndexing = indexedFilesCache.some(f => !f.indexed);
+        const hasConflicts = indexedFilesCache.some(f => f.inconsistencies && f.inconsistencies.has_any);
+        if (!hasIndexing && hasConflicts) return;
+      }
+    }
+
     // ── UPLOAD ─────────────────────────────────────────────
 
     async function uploadAll() {
@@ -1150,7 +1187,10 @@
       pendingFiles = remainingFiles;
       renderPending();
       btn.disabled = false;
-      if (success > 0) { showToast(`${success} file${success > 1 ? 's' : ''} uploaded — indexing in progress`, 'success'); setTimeout(() => loadIndexed(), 3000); }
+      if (success > 0) {
+        showToast(`${success} file${success > 1 ? 's' : ''} uploaded — indexing in progress`, 'success');
+        pollIndexedAfterUpload();
+      }
       if (failed > 0)  showToast(`${failed} file${failed > 1 ? 's' : ''} failed to upload`, 'error');
       if (uploadAlerts.length) showToast(`Detected possible inconsistencies in ${uploadAlerts.length} upload${uploadAlerts.length > 1 ? 's' : ''}`, 'error');
     }
@@ -1219,6 +1259,7 @@
               ${hasConflicts ? `<span class="alert-tag sev-medium" style="margin-left:8px">CONFLICTS ${conflictCount}</span>` : ''}
             </div>
             ${hasConflicts ? `<div class="alert-summary" style="margin-top:6px">${escHtml((f.inconsistencies.matches || [])[0]?.summary || 'Possible factual conflicts detected')}</div>` : ''}
+            ${hasConflicts ? renderConflictDetails(f.inconsistencies) : ''}
             ${f.indexed ? `<div class="progress-wrap"><div class="progress-bar" style="width:100%"></div></div>` : ''}
           </div>
           <div class="file-status">
@@ -1242,7 +1283,7 @@
         const res = await authFetch(`/files/${scope}/${encodeURIComponent(stem)}${suffix}`, { method: 'DELETE' });
         if (res.ok) {
           document.getElementById(`indexed-${scope}-${stem}`)?.remove();
-          showToast(`"${stem}" eliminado`, 'success');
+          showToast(`"${stem}" deleted`, 'success');
           loadIndexed();
         } else {
           showToast('Error deleting file', 'error');
@@ -1365,11 +1406,11 @@
         return;
       }
 
-      // Mostrar usuario y logout en sidebar si existe
+      // Show user and logout in the sidebar when present.
       const userEl = document.getElementById('currentUser');
       if (userEl) userEl.textContent = currentUser.username;
 
-      // Mostrar selector de scope solo para admin
+      // Show scope selection only for admins.
       const scopeWrap = document.getElementById('scopeWrap');
       if (scopeWrap) scopeWrap.style.display = currentUser.role === 'admin' ? 'flex' : 'none';
 

@@ -8,6 +8,10 @@ files/
 chunks/
 files_index.json
 logs/
+api_keys.json
+api.txt
+openai_api.txt
+anthropic_api.txt
 
 # Python cache
 __pycache__/

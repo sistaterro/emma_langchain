@@ -1152,15 +1152,10 @@
       </div>
 
       <div class="model-section">
-        <span class="field-label">Model</span>
+        <span class="field-label">AI API</span>
         <div class="select-wrap">
           <select id="modelSelect" onchange="onModelChange()">
-            <option value="deepseek-r1">deepseek-r1</option>
-            <option value="deepseek-v2">deepseek-v2</option>
-            <option value="qwen2.5">qwen2.5</option>
-            <option value="qwen2.5-coder">qwen2.5-coder</option>
-            <option value="qwen3.5:9b">qwen3.5:9b</option>
-            <option value="llama3.2">llama3.2</option>
+            <option value="">Loading APIs...</option>
           </select>
         </div>
       </div>
@@ -1194,7 +1189,7 @@
         <div class="chat-title" id="chatTitle">New conversation</div>
         <div class="header-right">
           <span class="meta-tag" id="msgCountTag"></span>
-          <span class="meta-tag active-model" id="modelBadge">qwen3.5:9b</span>
+          <span class="meta-tag active-model" id="modelBadge">Loading...</span>
         </div>
       </div>
 
@@ -1258,13 +1253,14 @@
       MOCK_MODE: false,
       HEALTH_INTERVAL: 10000,
       STREAM: true,
-      MAX_CONTEXT_MESSAGES: 12,
+      MAX_CONTEXT_MESSAGES: 0,
     };
 
     let state = {
       conversations: {},
       activeId: null,
-      model: 'qwen3.5:9b',
+      model: '',
+      modelLabel: '',
       isGenerating: false,
       abortController: null,
     };
@@ -1471,8 +1467,10 @@
     }
 
     function onModelChange() {
-      state.model = document.getElementById('modelSelect').value;
-      document.getElementById('modelBadge').textContent = state.model;
+      const sel = document.getElementById('modelSelect');
+      state.model = sel.value;
+      state.modelLabel = sel.selectedOptions[0]?.textContent || state.model;
+      document.getElementById('modelBadge').textContent = state.modelLabel || state.model || 'No API';
       saveLocal();
     }
 
@@ -1480,6 +1478,10 @@
       const ta = document.getElementById('msgInput');
       const text = ta.value.trim();
       if (!text || state.isGenerating) return;
+      if (!state.model) {
+        appendMsg({ id: genId(), role: 'assistant', content: 'No AI API is configured yet.', model: 'Emma' });
+        return;
+      }
       if (!state.activeId) await newConversation();
       ta.value = ''; ta.style.height = 'auto';
       document.getElementById('sendBtn').disabled = true;
@@ -1492,10 +1494,10 @@
       try {
         const reply = await fetchReply(requestMessages, typing);
         typing.remove();
-        if (!CONFIG.STREAM) appendMsg({ id: genId(), role: 'assistant', content: reply, model: state.model });
+        if (!CONFIG.STREAM) appendMsg({ id: genId(), role: 'assistant', content: reply, model: state.modelLabel || state.model });
       } catch (err) {
         typing.remove();
-        if (err.name !== 'AbortError') appendMsg({ id: genId(), role: 'assistant', content: `Error: ${err.message}`, model: state.model });
+        if (err.name !== 'AbortError') appendMsg({ id: genId(), role: 'assistant', content: `Error: ${err.message}`, model: state.modelLabel || state.model });
       } finally { setGenerating(false); setHalState('ready'); }
     }
 
@@ -1527,13 +1529,16 @@
 
     function getRequestMessages(messages) {
       if (!Array.isArray(messages) || !messages.length) return [];
-      const max = Math.max(1, CONFIG.MAX_CONTEXT_MESSAGES || messages.length);
+      if (!CONFIG.MAX_CONTEXT_MESSAGES) {
+        return messages.map(m => ({ role: m.role, content: m.content }));
+      }
+      const max = Math.max(1, CONFIG.MAX_CONTEXT_MESSAGES);
       return messages.slice(-max).map(m => ({ role: m.role, content: m.content }));
     }
 
     function createAssistantStreamMsg() {
       const conv = activeConv(); if (!conv) return null;
-      const msg = { id: genId(), role: 'assistant', content: '', model: state.model };
+      const msg = { id: genId(), role: 'assistant', content: '', model: state.modelLabel || state.model };
       conv.messages.push(msg); renderSidebar();
       const msgs = document.getElementById('messages');
       document.getElementById('emptyState').style.display = 'none';
@@ -1667,6 +1672,32 @@
       return `Got it. Mock response to: *"${last.slice(0, 60)}"*\n\nSet \`MOCK_MODE: false\` and \`BASE_URL\` to connect your local model.\n\`\`\`js\nBASE_URL: 'http://localhost:11434'\n\`\`\``;
     }
 
+    function renderModelOptions(models) {
+      const sel = document.getElementById('modelSelect');
+      const normalized = (models || []).map(m => typeof m === 'string' ? { id: m, label: m } : m);
+      if (!normalized.length) {
+        state.model = '';
+        state.modelLabel = '';
+        sel.innerHTML = '<option value="">No API configured</option>';
+        document.getElementById('modelBadge').textContent = 'No API';
+        return;
+      }
+
+      const saved = localStorage.getItem('emma_model');
+      const selected = normalized.find(m => m.id === state.model)
+        || normalized.find(m => m.id === saved)
+        || normalized[0];
+      state.model = selected.id;
+      state.modelLabel = selected.label || selected.id;
+      sel.innerHTML = normalized.map(m => {
+        const label = m.label || m.id;
+        const provider = m.provider ? `${m.provider.toUpperCase()} / ` : '';
+        return `<option value="${escHtml(m.id)}" ${m.id === state.model ? 'selected' : ''}>${escHtml(provider + label)}</option>`;
+      }).join('');
+      document.getElementById('modelBadge').textContent = state.modelLabel;
+      saveLocal();
+    }
+
     async function checkHealth() {
       const dot = document.getElementById('statusDot');
       const text = document.getElementById('statusText');
@@ -1687,10 +1718,7 @@
           try {
             const data = await res.json();
             const models = data?.models || [];
-            if (models.length) {
-              const sel = document.getElementById('modelSelect');
-              sel.innerHTML = models.map(m => `<option value="${m}" ${m === state.model ? 'selected' : ''}>${m}</option>`).join('');
-            }
+            renderModelOptions(models);
           } catch (_) { }
         } else throw new Error();
       } catch {

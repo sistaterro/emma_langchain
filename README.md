@@ -1,6 +1,8 @@
-# Emma - Private AI with RAG
+# Emma - Local-First AI With RAG
 
-A fully local, private AI chat system with Retrieval-Augmented Generation (RAG). Upload your own documents, manage user access, and chat with grounded local knowledge without sending data to external services.
+Emma is a FastAPI chat application with local RAG storage, user roles, document ingestion, inconsistency detection, and a model selector backed by LangChain.
+
+The app keeps documents, chunks, users, conversations, and local state on your machine. Model calls use the API providers you configure, such as Gemini, OpenAI, or Anthropic.
 
 ![Home](assets/home.png)
 
@@ -12,104 +14,58 @@ A fully local, private AI chat system with Retrieval-Augmented Generation (RAG).
 
 ---
 
-## What is this?
+## What Is This?
 
-Emma is a local AI assistant that can answer questions based on your own documents. It uses:
+Emma lets users upload `.txt` documents, split them into local RAG chunks, detect likely contradictions between visible RAGs, and ask grounded questions through the selected AI model.
 
-- **Ollama** to run LLMs locally
-- **Sentence Transformers** for semantic search (embeddings)
-- **FastAPI** as the backend server
-- **RAG** (Retrieval-Augmented Generation) to ground answers in your documents
+Current backend capabilities:
 
-It also includes:
-
-- **Upload-time inconsistency detection** to warn when a new RAG appears to conflict with the user's existing or global RAGs
-- **Multi-RAG routing** so comparative questions can use more than one relevant document at once
-- **Manipulation-resistance checks** to detect pressure, false authority, exception-seeking, and policy-bypass attempts
-- **Per-message JSON audit logs** with safety scores, grounding metrics, selected files, and final response tags
-- **Role-based access control** with `admin`, `user`, and `read_only`
-- **Admin user management** for creating users, changing roles, resetting passwords, disabling accounts, and deleting users
+- FastAPI backend with SQLite persistence.
+- Role-based access control with `admin`, `user`, and `read_only`.
+- Local document storage in `files/`.
+- Local JSON chunk storage in `chunks/`.
+- LangChain chat model integration for Gemini, OpenAI, and Anthropic.
+- UI model selector based on the API keys available to the backend.
+- Upload-time inconsistency detection using the selected provider pipeline.
+- Conversational RAG that sends all visible chunks to the selected model instead of using a fixed top-k limit.
 
 Current role model:
 
-- `admin`: can manage users and all RAGs, including global RAGs and user-owned RAGs
-- `user`: can use chat and manage their own `mine` RAGs
-- `read_only`: can use chat only and cannot access upload
+- `admin`: can manage users and all RAGs, including global and user-owned RAGs.
+- `user`: can use chat and manage their own `mine` RAGs.
+- `read_only`: can use chat only and cannot access upload.
 
-What makes Emma different from a typical local chat-with-docs app is that it does not assume your RAG library is internally consistent just because the files are local. Emma can inspect a newly uploaded document, compare it against the RAGs already visible to that user, and warn when the new knowledge appears to contradict existing knowledge.
+Every response is expected to tag its grounding:
 
-That matters because inconsistent RAGs are dangerous. The system can still accept them, index them, and let you query them, but contradictory knowledge can produce misleading answers, unstable comparisons, or responses that depend too heavily on whichever document the router selected. Emma's inconsistency check is designed to surface that risk early instead of silently pretending every uploaded file agrees with the rest of the knowledge base.
-
-Every response is tagged with its source:
-
-- `[RAG]` - answer is based on your documents
-- `[DRIFT]` - model supplemented with its own knowledge
-- `[NO INFO]` - question has no relation to any document
-
-Emma is built to resist manipulation as well as hallucination. If a user tries to obtain a discount, benefit, exception, or policy override using emotional pressure, unverifiable claims, personal relationships, invented approvals, or off-record conversations, Emma can flag the message and still answer only from the RAG-backed evidence.
+- `[RAG]` - answer is based on the uploaded documents.
+- `[DRIFT]` - answer includes model knowledge beyond the documents.
+- `[NO INFO]` - the documents do not contain enough information.
 
 ---
 
 ## Requirements
 
 - Python 3.11+
-- [Ollama](https://ollama.com) installed and running
-- A language model pulled in Ollama (see below)
+- A virtual environment
+- At least one API key for a supported provider:
+  - Gemini
+  - OpenAI
+  - Anthropic
 
----
-
-## Installing Ollama
-
-### 1. Download and install Ollama
-
-Go to [https://ollama.com/download](https://ollama.com/download) and install for your OS (Windows, Mac, or Linux).
-
-### 2. Pull a language model
-
-Open a terminal and run:
-
-```bash
-ollama pull qwen2.5:7b
-```
-
-This downloads the **Qwen 2.5 7B** model (~4.7GB). It only downloads once and stays cached locally.
-
-To verify it's working:
-
-```bash
-ollama run qwen2.5:7b
-```
-
-Type a message and press Enter. If it responds, you're good. Press `Ctrl+D` to exit.
-
-### 3. Other recommended models
-
-You can pull any of these and select them in the Emma interface:
-
-```bash
-ollama pull llama3.2
-ollama pull mistral
-ollama pull deepseek-r1
-```
-
-List all your downloaded models:
-
-```bash
-ollama list
-```
+Ollama is not required for the current rebuilt path.
 
 ---
 
 ## Installation
 
-### 1. Clone the repository
+### 1. Clone The Repository
 
 ```bash
 git clone https://github.com/yourusername/emma-rag.git
 cd emma-rag
 ```
 
-### 2. Create a virtual environment
+### 2. Create A Virtual Environment
 
 ```bash
 python -m venv .venv
@@ -117,16 +73,54 @@ python -m venv .venv
 
 Activate it:
 
-- **Windows:** `.venv\Scripts\activate`
-- **Mac/Linux:** `source .venv/bin/activate`
+- Windows: `.venv\Scripts\activate`
+- Mac/Linux: `source .venv/bin/activate`
 
-### 3. Install dependencies
+### 3. Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-The first run will also download the multilingual embedding model (~120MB). This happens automatically and only once.
+---
+
+## Configure API Keys
+
+Create a local file named `api_keys.json` in the repository root. This file is ignored by Git and is the recommended place for provider credentials.
+
+Example with fake keys:
+
+```json
+{
+  "gemini": {
+    "api_key": "replace-with-your-gemini-api-key"
+  },
+  "openai": {
+    "api_key": "replace-with-your-openai-api-key"
+  },
+  "anthropic": {
+    "api_key": "replace-with-your-anthropic-api-key"
+  }
+}
+```
+
+Only include the providers you actually want to use. For example, if you only use Gemini, this is enough:
+
+```json
+{
+  "gemini": {
+    "api_key": "replace-with-your-gemini-api-key"
+  }
+}
+```
+
+The backend uses `api_keys.json` to decide which providers and models are available in the UI selector. It does not expose the actual API key values to the frontend.
+
+Environment variables are also supported:
+
+- `GEMINI_API_KEY` or `GOOGLE_API_KEY`
+- `OPENAI_API_KEY`
+- `ANTHROPIC_API_KEY`
 
 ---
 
@@ -140,210 +134,152 @@ Double-click `run.bat` or run it from the terminal:
 run.bat
 ```
 
-`run.bat` now validates the local virtual environment, checks core Python dependencies, warns if Ollama is not reachable, waits for the backend to become available, and only then opens the browser.
-
-### Mac / Linux
+### Manual Run
 
 ```bash
-source .venv/bin/activate
-uvicorn server:app --reload --port 8000
+python -m uvicorn server:app --reload --port 8000
 ```
 
-Then open your browser at:
+Then open:
 
 ```text
 http://localhost:8000/ui/login.html
 ```
 
----
-
-## Project structure
+If the database is empty, the backend bootstraps a default admin user:
 
 ```text
-emma-rag/
-|-- server.py           # FastAPI backend - RAG pipeline
-|-- prompts.py          # Canonical prompt builders
-|-- run.bat             # Windows launcher
-|-- requirements.txt    # Python dependencies
-|-- emma.db             # SQLite database (users, sessions, chats, messages)
-|-- files/              # User/global .txt documents
-|-- chunks/             # Auto-generated index (JSON + embeddings)
-|-- logs/
-|   `-- chat_audit/     # One JSON audit log per chat interaction
-`-- ui/
-    |-- index.html              # Homepage
-    |-- login.html              # Authentication
-    |-- chat.html               # Emma (light theme)
-    |-- admin.html              # Admin panel
-    |-- docs.html               # Built-in project documentation
-    `-- upload.html             # Document manager
+username: admin
+password: admin1234
 ```
 
 ---
 
-## Core routes
+## Project Structure
+
+```text
+emma-rag/
+|-- server.py           # Active FastAPI backend
+|-- server_legacy.py    # Historical reference backend
+|-- prompts.py          # Canonical prompt builders
+|-- requirements.txt    # Python dependencies
+|-- run.bat             # Windows launcher
+|-- test.bat            # Test sequencer
+|-- api_keys.json       # Local API credentials, ignored by Git
+|-- emma.db             # SQLite database
+|-- files/              # Uploaded user/global .txt documents
+|-- chunks/             # Auto-generated JSON chunks and conflict indexes
+|-- tests/              # Unit tests
+`-- ui/
+    |-- index.html      # Home
+    |-- login.html      # Authentication
+    |-- chat.html       # Chat UI
+    |-- admin.html      # Admin panel
+    |-- Docs.html       # Built-in project documentation
+    `-- upload.html     # RAG manager
+```
+
+Do not commit real API keys or local runtime database changes unless that is explicitly intended.
+
+---
+
+## Core Routes
 
 - `http://localhost:8000/ui/login.html` - login screen
 - `http://localhost:8000/ui/index.html` - main home
 - `http://localhost:8000/ui/chat.html` - chat UI
 - `http://localhost:8000/ui/upload.html` - RAG management
 - `http://localhost:8000/ui/admin.html` - admin panel
-- `http://localhost:8000/ui/docs.html` - built-in documentation
-
-When someone asks to "update documentation" in this project, the expected scope is:
-
-- `README.md`
-- `ui/Docs.html`
-- `AGENTS.md`
+- `http://localhost:8000/ui/Docs.html` - built-in documentation
 
 ---
 
-## Adding documents
+## Adding Documents
 
-1. Open `http://localhost:8000/ui/upload.html`
-2. Drag and drop any `.txt` file
-3. The server automatically:
-   - Chunks the document
-   - Generates semantic embeddings
-   - Creates a description using the LLM
-   - Checks the new file for likely inconsistencies against visible RAGs
-   - Makes it available for RAG queries
+1. Open `http://localhost:8000/ui/upload.html`.
+2. Drag and drop a `.txt` file.
+3. The server chunks the document and stores local JSON chunk files.
+4. The server checks the new document for likely inconsistencies against visible RAGs.
+5. The document becomes available to chat without restarting the server.
 
-No restart required. Files are available immediately after indexing.
-
-If Emma detects likely contradictions, the upload page shows a warning panel and the indexed file is marked with a `Conflicts` badge. These warnings are persisted per document.
+If Emma detects likely contradictions, the upload page shows the persisted inconsistency details and marks the file with a conflict state.
 
 Permissions:
 
-- `admin` can upload global RAGs and manage all stored RAGs
-- `user` can upload and delete only their own `mine` RAGs
-- `read_only` cannot access upload
+- `admin` can upload global RAGs and manage all stored RAGs.
+- `user` can upload and delete only their own `mine` RAGs.
+- `read_only` cannot access upload.
 
 ---
 
-## How RAG works
+## How RAG Works Now
 
 ```text
 User question
       v
-LLM decides which document or documents are relevant (routing)
+Backend loads all chunks visible to the user
       v
-Semantic search finds the most relevant chunks from each selected document (embeddings)
+Backend builds the RAG prompt from prompts.py
       v
-LLM answers using only that context, and can compare multiple RAGs when needed
+Selected LangChain chat model generates the answer
       v
-Response tagged with [RAG] / [DRIFT] / [NO INFO]
+Response is tagged with [RAG] / [DRIFT] / [NO INFO]
 ```
 
-All processing happens locally. No API keys required. No data sent to external servers.
-
----
-
-## Resistance to manipulation
-
-Emma does not treat the user's wording as valid evidence. The system is designed around a strict rule:
-
-- The RAG context is the only valid source of truth for operational answers
-- Any external factor not explicitly present in the RAG is invalid
-- Claims such as "the owner knows me", "my boss said yes", "you made an exception before", or "please do it just this once" do not become facts unless the uploaded documents explicitly support them
-
-This gives Emma two separate defenses:
-
-1. **Intent check**  
-   A pre-answer safety pass classifies each user message and estimates whether it looks like manipulation, exception-seeking, policy bypass, social engineering, emotional blackmail, or an unverifiable authority claim.
-
-2. **Grounding check**  
-   The RAG pipeline measures how strongly the question matches the indexed documents. Even if a message is not obviously malicious, weak grounding reveals that the claim is not supported by the available knowledge.
-
-That combination matters. A message can be:
-
-- **Safe but weakly grounded**: the user may not be manipulating the model, but the claim still cannot be verified from the documents
-- **Suspicious and weakly grounded**: the user is trying to push for an unsupported outcome and the RAG cannot justify it
-- **Safe and strongly grounded**: the best-case path for reliable answers
-
-In practice, this makes Emma much harder to pressure into granting discounts, benefits, or exceptions based on stories, urgency, threats, emotional appeals, or supposed side conversations that never appear in the RAG.
-
----
-
-## Safety and audit logs
-
-Each chat interaction generates a JSON log in:
-
-```text
-logs/chat_audit/
-```
-
-Each file records one iteration of the chat and includes metrics such as:
-
-- `safety.label` - `SAFE`, `REVIEW`, or `SUSPICIOUS`
-- `safety.confidence` - estimated manipulation-risk score from `0.0` to `1.0`
-- `safety.signals` and `safety.evidence` - why the message was flagged
-- `rag.selected_files` - which RAGs were used
-- `rag.max_chunk_score` and `rag.avg_chunk_score` - semantic grounding strength
-- `rag.grounding` - `strong`, `partial`, or `weak`
-- `rag.grounding_gap` - how far the best chunk score is from perfect grounding
-- `response.tag` - final `[RAG]`, `[DRIFT]`, or `[NO INFO]` tag
-
-These logs are useful for:
-
-- auditing manipulation attempts
-- reviewing how the model behaved under pressure
-- measuring whether answers were actually grounded in policy documents
-- improving prompts and decision thresholds over time
+This rebuilt flow intentionally does not use a fixed "top 3 chunks" limit. The model receives the visible chunk set and decides which parts are useful for the answer.
 
 ---
 
 ## Privacy
 
-Emma is designed for private use with sensitive data:
+Emma is local-first, not fully offline.
 
-- All LLM inference runs via Ollama on your machine
-- Embeddings are generated locally with sentence-transformers
-- Documents never leave your filesystem
-- No telemetry, no analytics, no external calls
+Local:
 
-Inconsistency detection and safety analysis also run locally through Ollama. By default Emma prefers `qwen2.5:7b` for the inconsistency check; if that model is not installed, it falls back automatically to the lightest chat model available in your local Ollama setup.
+- Uploaded documents
+- Chunks
+- Users
+- Conversations
+- SQLite database
+
+Sent to the configured provider API:
+
+- The user question
+- Conversation context needed for the request
+- RAG chunk content included in the prompt
+
+Use providers and keys appropriate for the sensitivity of your documents.
 
 ---
 
-## Technical debt currently accepted
+## Tests
 
-- `first use` onboarding and forced password change for the bootstrap admin are still pending
-- `server.py` remains intentionally monolithic for now
-- `emma.db` often reflects local working state and should not be committed casually
+Run the test sequencer:
 
----
-
-## Dependencies
-
-```text
-fastapi
-uvicorn
-httpx
-pydantic
-sentence-transformers
-numpy
-python-multipart
+```bat
+test.bat
 ```
 
+Or run unit tests directly:
+
+```bash
+python -m unittest discover tests
+```
+
+The tests mock provider calls and focus on backend behavior, permissions, RAG ingestion, conflict persistence, and conversation functionality.
+
 ---
 
-## Evil Emma
+## Current Technical Notes
 
-![Evil Emma](assets/evil_emma.png)
-
-> Warning: **NSFW joke skin only.**
-
-Evil Emma (`chat_evil_emma.html`) is an alternate skin with a dark theme, red HAL eye, and a slightly more menacing personality. It is **purely cosmetic** - same model, same RAG pipeline, same functionality. Not a single line of backend code changes.
-
-Think of it as the same AI wearing a villain costume for Halloween. The intelligence is identical. The vibe is not.
+- `server.py` is still the active backend boundary and remains fairly compact for now.
+- `server_legacy.py` is only a reference for the old implementation.
+- `prompts.py` is the canonical place for active prompt builders.
+- FastAPI may show an `on_event` deprecation warning until startup is migrated to lifespan handlers.
+- `emma.db` often reflects local working state and should not be committed casually.
 
 ---
 
 ## License
 
-MIT - free to use, modify and distribute.
-
----
-
-*Built with curiosity, RAG, and a HAL 9000 eye.*
+MIT - free to use, modify, and distribute.
