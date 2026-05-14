@@ -16,12 +16,6 @@ This branch is a rebuild branch for a LangChain-centered backend.
 
 The active backend in `server.py` has been partially rebuilt. It now includes auth, role enforcement, user management, conversation persistence, file upload/delete/download, RAG chunk ingestion, inconsistency detection, provider/model selection, and chat generation through LangChain chat model integrations.
 
-The pre-rebuild backend was copied to:
-
-- `server_legacy.py`
-
-Use `server_legacy.py` only as a historical reference for previous behavior, data flow, endpoints, permissions, persistence rules, and the old RAG pipeline. It is not active runtime code and does not need to be preserved indefinitely.
-
 The original system implemented:
 
 - FastAPI backend.
@@ -51,15 +45,10 @@ The rebuild goal is to keep endpoint behavior explicit while moving model calls 
   - Contains the current rebuilt auth, permissions, conversations, file management, RAG chunking, inconsistency detection, model catalog, LangChain provider factory, and chat endpoint.
   - Keep it as the HTTP boundary. If future changes grow large, move cohesive pieces into small modules instead of expanding it indefinitely.
 
-- `server_legacy.py`
-  - Historical reference copy of the pre-rebuild backend.
-  - Contains the old auth, conversations, chat, files, indexing, retrieval, inconsistency detection, and auditing logic.
-  - Do not treat it as active code. It may be deleted later once the rebuild has enough coverage and confidence.
-
 - `prompts.py`
   - Canonical location for active system prompts.
   - Currently contains only active prompts: `build_inconsistency_prompt(...)` and `build_rag_prompt(...)`.
-  - Do not reintroduce legacy routing prompts for "most relevant" files unless the RAG strategy changes again.
+  - Do not reintroduce routing prompts for "most relevant" files unless the RAG strategy changes again.
 
 - `ui/index.html`
   - Main home screen.
@@ -109,7 +98,6 @@ The rebuild goal is to keep endpoint behavior explicit while moving model calls 
 
 Before touching a feature:
 
-- check whether the behavior exists only in `server_legacy.py`;
 - locate the backend endpoint involved;
 - locate the HTML screen that consumes it;
 - review whether there is persisted state in SQLite, JSON indexes, or files on disk;
@@ -193,7 +181,7 @@ Recommended workflow:
 - or run the suite manually:
   - `.\.venv\Scripts\python.exe -m unittest discover tests`
 - validate quick syntax manually when needed:
-  - `.\.venv\Scripts\python.exe -m py_compile server.py prompts.py server_legacy.py`
+  - `.\.venv\Scripts\python.exe -m py_compile server.py prompts.py`
 - tests must mock external model/server calls. Do not make Gemini/OpenAI/Anthropic calls from automated tests.
 
 Current automated tests:
@@ -224,7 +212,6 @@ These debt items may exist consciously and should not be "fixed" without alignin
 - `emma.db` often reflects local working state, not only schema.
 - FastAPI `@app.on_event("startup")` emits a deprecation warning during tests; migrate to lifespan when convenient.
 - Streaming currently wraps the full model response into JSON-line chunks after generation rather than streaming provider tokens directly.
-- `server_legacy.py` still exists only as reference and can be removed later.
 
 ## What To Do When Inheriting This Repo
 
@@ -236,7 +223,6 @@ Recommended order to understand it:
 4. Review `ui/index.html`, `ui/chat.html`, `ui/upload.html`, and `ui/admin.html` to understand frontend expectations.
 5. Confirm the real schema in `emma.db`.
 6. Review `files/`, `chunks/`, and `logs/chat_audit/` to understand auxiliary persistence.
-7. Consult `server_legacy.py` only if you need historical context.
 
 Current rebuild status:
 
@@ -245,14 +231,13 @@ Current rebuild status:
 3. Conversation persistence: rebuilt.
 4. Provider/model selection: rebuilt using LangChain integrations.
 5. Upload, chunk ingestion, and inconsistency detection: rebuilt.
-6. Chat: rebuilt using all visible chunks instead of legacy top-k retrieval.
+6. Chat: rebuilt using all visible chunks instead of top-k retrieval.
 7. Tests: active and expected to pass.
 
 Likely next work:
 
 - split `server.py` into small modules once behavior stabilizes;
 - migrate startup to FastAPI lifespan;
-- decide whether to remove `server_legacy.py`;
 - improve direct provider-token streaming if needed.
 
 ## General Criterion
@@ -261,6 +246,6 @@ The best contribution in this project is usually to:
 
 - make important things easier to find;
 - harden backend behavior before polishing frontend behavior;
-- port legacy behavior deliberately instead of copying the old monolith back into place;
+- preserve current tested behavior deliberately instead of rebuilding large monoliths;
 - reduce surprises;
 - and leave each change easier to understand than before.

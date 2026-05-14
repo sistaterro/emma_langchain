@@ -160,7 +160,6 @@ password: admin1234
 ```text
 emma-rag/
 |-- server.py           # Active FastAPI backend
-|-- server_legacy.py    # Historical reference backend
 |-- prompts.py          # Canonical prompt builders
 |-- requirements.txt    # Python dependencies
 |-- run.bat             # Windows launcher
@@ -273,7 +272,6 @@ The tests mock provider calls and focus on backend behavior, permissions, RAG in
 ## Current Technical Notes
 
 - `server.py` is still the active backend boundary and remains fairly compact for now.
-- `server_legacy.py` is only a reference for the old implementation.
 - `prompts.py` is the canonical place for active prompt builders.
 - FastAPI may show an `on_event` deprecation warning until startup is migrated to lifespan handlers.
 - `emma.db` often reflects local working state and should not be committed casually.
