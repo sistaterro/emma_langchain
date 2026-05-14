@@ -273,7 +273,7 @@ The tests mock provider calls and focus on backend behavior, permissions, RAG in
 
 - `server.py` is still the active backend boundary and remains fairly compact for now.
 - `prompts.py` is the canonical place for active prompt builders.
-- FastAPI may show an `on_event` deprecation warning until startup is migrated to lifespan handlers.
+- Startup initialization uses FastAPI lifespan handlers.
 - `emma.db` often reflects local working state and should not be committed casually.
 
 ---

@@ -210,7 +210,7 @@ These debt items may exist consciously and should not be "fixed" without alignin
 - `server.py` remains monolithic;
 - parts of the admin UI may still need cleanup;
 - `emma.db` often reflects local working state, not only schema.
-- FastAPI `@app.on_event("startup")` emits a deprecation warning during tests; migrate to lifespan when convenient.
+- Startup initialization uses FastAPI lifespan handlers.
 - Streaming currently wraps the full model response into JSON-line chunks after generation rather than streaming provider tokens directly.
 
 ## What To Do When Inheriting This Repo
@@ -237,7 +237,6 @@ Current rebuild status:
 Likely next work:
 
 - split `server.py` into small modules once behavior stabilizes;
-- migrate startup to FastAPI lifespan;
 - improve direct provider-token streaming if needed.
 
 ## General Criterion

@@ -5,6 +5,7 @@ import re
 import secrets
 import sqlite3
 import textwrap
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -20,7 +21,13 @@ from pydantic import BaseModel
 from prompts import build_inconsistency_prompt, build_rag_prompt
 
 
-app = FastAPI(title="Emma Server")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    initialize_runtime()
+    yield
+
+
+app = FastAPI(title="Emma Server", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -1028,8 +1035,7 @@ async def favicon():
     return FileResponse(path=str(FAVICON_PATH), media_type="image/svg+xml")
 
 
-@app.on_event("startup")
-async def startup():
+def initialize_runtime():
     init_db()
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     GLOBAL_FILES_DIR.mkdir(parents=True, exist_ok=True)
