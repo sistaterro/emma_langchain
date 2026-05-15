@@ -119,6 +119,98 @@ class RagPipelineTests(unittest.TestCase):
         finally:
             self.server.compare_documents_for_inconsistencies = original_compare
 
+    def test_existing_rag_conflict_check_persists_clean_result(self):
+        async def fake_compare(**_kwargs):
+            return {
+                "has_inconsistencies": False,
+                "summary": "",
+                "items": [],
+            }
+
+        original_compare = self.server.compare_documents_for_inconsistencies
+        self.server.compare_documents_for_inconsistencies = fake_compare
+        try:
+            user = {"id": 1, "username": "admin", "full_name": "admin", "role": "admin"}
+            global_file = self.server.GLOBAL_FILES_DIR / "discounts.txt"
+            self.server.GLOBAL_FILES_DIR.mkdir(parents=True, exist_ok=True)
+            global_file.write_text(LONG_DISCOUNT_TEXT, encoding="utf-8")
+            asyncio.run(
+                self.server.process_rag_file(
+                    global_file,
+                    self.server.GLOBAL_CHUNKS_DIR,
+                    "global",
+                    None,
+                )
+            )
+
+            files_dir = self.server.user_files_dir(1)
+            chunks_dir = self.server.user_chunks_dir(1)
+            new_file = files_dir / "no_discounts.txt"
+            new_file.write_text(LONG_NO_DISCOUNT_TEXT, encoding="utf-8")
+            asyncio.run(self.server.process_rag_file(new_file, chunks_dir, "user", 1))
+            asyncio.run(
+                self.server.check_existing_rag_conflicts(
+                    new_file,
+                    chunks_dir,
+                    "user",
+                    1,
+                    user,
+                )
+            )
+
+            conflicts = json.loads((files_dir / "conflicts_index.json").read_text(encoding="utf-8"))
+            self.assertIn("no_discounts", conflicts)
+            self.assertFalse(conflicts["no_discounts"]["has_any"])
+            self.assertEqual(conflicts["no_discounts"]["matches"], [])
+            self.assertEqual(conflicts["no_discounts"]["status"], "checked")
+            self.assertIn("checked_at", conflicts["no_discounts"])
+        finally:
+            self.server.compare_documents_for_inconsistencies = original_compare
+
+    def test_prunes_conflicts_when_referenced_rag_is_deleted(self):
+        files_dir = self.server.user_files_dir(1)
+        chunks_dir = self.server.user_chunks_dir(1)
+        first = files_dir / "discounts.txt"
+        second = files_dir / "no_discounts.txt"
+        first.write_text(LONG_DISCOUNT_TEXT, encoding="utf-8")
+        second.write_text(LONG_NO_DISCOUNT_TEXT, encoding="utf-8")
+        asyncio.run(self.server.process_rag_file(first, chunks_dir, "user", 1))
+        asyncio.run(self.server.process_rag_file(second, chunks_dir, "user", 1))
+        self.server.save_conflicts_to_index(
+            files_dir,
+            "no_discounts",
+            {
+                "has_any": True,
+                "matches": [
+                    {
+                        "name": "discounts.txt",
+                        "scope": "user",
+                        "summary": "Rules conflict.",
+                        "items": [
+                            {
+                                "topic": "Monday discount",
+                                "new_claim": "No discounts.",
+                                "existing_claim": "Discounts apply.",
+                                "severity": "high",
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+
+        token = self.login()
+        delete_response = self.client.delete(
+            "/files/user/discounts",
+            headers=self.auth_headers(token),
+        )
+        self.assertEqual(delete_response.status_code, 200, delete_response.text)
+
+        conflicts = json.loads((files_dir / "conflicts_index.json").read_text(encoding="utf-8"))
+        self.assertIn("no_discounts", conflicts)
+        self.assertFalse(conflicts["no_discounts"]["has_any"])
+        self.assertEqual(conflicts["no_discounts"]["matches"], [])
+
     def test_chat_endpoint_sends_all_visible_chunks_to_model(self):
         captured = {}
 

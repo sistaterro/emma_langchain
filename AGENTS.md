@@ -162,7 +162,10 @@ Practical rule:
 - Model generation should go through `generate_ai_reply(...)` and the LangChain model factory. Do not call provider REST APIs directly from endpoint code.
 - Keep API keys server-side only. `/health` may report available providers/models, but must never return secret values.
 - RAG ingestion writes chunks as JSON only. Embeddings and `.npy` files are not part of the current rebuilt flow.
-- Inconsistency detection is asynchronous after upload and persisted in `conflicts_index.json`; UI should poll `/files` instead of relying only on the immediate upload response.
+- Inconsistency detection is asynchronous and persisted in `conflicts_index.json`.
+- `/files` is responsible for surfacing persisted conflict state and scheduling missing checks for indexed RAGs that have no conflict record yet.
+- When deleting RAGs, prune both direct `conflicts_index.json` entries and orphaned `matches` that reference deleted files.
+- The upload UI should poll `/files` while files are indexing or conflict checks are still marked as `checking`.
 
 ## UX And Frontend
 
@@ -187,7 +190,7 @@ Recommended workflow:
 Current automated tests:
 
 - `tests/test_permissions.py` covers role restrictions for admin/file-management behavior.
-- `tests/test_rag_pipeline.py` covers chunk ingestion, file indexes, mocked inconsistency persistence, and chat prompt construction with all visible chunks.
+- `tests/test_rag_pipeline.py` covers chunk ingestion, file indexes, mocked inconsistency persistence, clean conflict checks, orphaned conflict pruning, and chat prompt construction with all visible chunks.
 - `tests/test_core_endpoints.py` covers auth, admin user management, conversation CRUD, file upload/list/download/delete, model catalog behavior, and LangChain missing-dependency errors.
 
 Useful manual smoke tests after changes:
@@ -196,6 +199,7 @@ Useful manual smoke tests after changes:
 - correct card visibility in `index.html`;
 - upload and delete of user-owned RAGs;
 - upload two contradictory RAGs and confirm `upload.html` shows conflicts after polling;
+- delete one side of a conflict and confirm the remaining file no longer shows stale conflict details;
 - `read_only` restrictions;
 - user management from admin;
 - chat creation, deletion, and recreation;

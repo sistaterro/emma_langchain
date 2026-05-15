@@ -57,6 +57,7 @@ LEGACY_API_KEY_FILES = {
     "openai": Path("openai_api.txt"),
     "anthropic": Path("anthropic_api.txt"),
 }
+CONFLICT_CHECK_TASKS: set[str] = set()
 
 MODEL_CATALOG = [
     {
@@ -364,13 +365,65 @@ def load_conflicts_index(base_dir: Path) -> dict:
     return prune_index_entries(base_dir, "conflicts_index.json")
 
 
+def conflicts_response(record: dict | None, status: str = "unchecked") -> dict:
+    if not isinstance(record, dict):
+        return {"has_any": False, "matches": [], "status": status}
+    matches = record.get("matches") if isinstance(record.get("matches"), list) else []
+    response = {
+        "has_any": bool(record.get("has_any")) and bool(matches),
+        "matches": matches,
+        "status": record.get("status") or status,
+    }
+    if record.get("checked_at"):
+        response["checked_at"] = record["checked_at"]
+    return response
+
+
+def conflict_match_still_exists(base_dir: Path, match: dict) -> bool:
+    if not isinstance(match, dict):
+        return False
+    name = str(match.get("name") or "").strip()
+    if not name:
+        return False
+    scope = str(match.get("scope") or "user")
+    if scope == "global":
+        return (GLOBAL_FILES_DIR / name).exists()
+    return (base_dir / name).exists()
+
+
+def prune_orphaned_conflict_matches(base_dir: Path) -> dict:
+    idx_path = base_dir / "conflicts_index.json"
+    index = load_conflicts_index(base_dir)
+    changed = False
+    cleaned_index = {}
+    for stem, record in index.items():
+        if not isinstance(record, dict):
+            changed = True
+            continue
+        matches = record.get("matches") if isinstance(record.get("matches"), list) else []
+        cleaned_matches = [
+            match for match in matches if conflict_match_still_exists(base_dir, match)
+        ]
+        if len(cleaned_matches) != len(matches):
+            changed = True
+        cleaned_record = dict(record)
+        cleaned_record["matches"] = cleaned_matches
+        cleaned_record["has_any"] = bool(cleaned_matches)
+        cleaned_index[stem] = cleaned_record
+    if changed:
+        idx_path.write_text(json.dumps(cleaned_index, ensure_ascii=False, indent=2), encoding="utf-8")
+    return cleaned_index
+
+
 def save_conflicts_to_index(base_dir: Path, stem: str, conflicts: dict) -> None:
     idx_path = base_dir / "conflicts_index.json"
     index = load_conflicts_index(base_dir)
-    if conflicts.get("has_any"):
-        index[stem] = conflicts
-    elif stem in index:
-        del index[stem]
+    index[stem] = {
+        "has_any": bool(conflicts.get("has_any")),
+        "matches": conflicts.get("matches") if isinstance(conflicts.get("matches"), list) else [],
+        "status": "checked",
+        "checked_at": datetime.utcnow().isoformat(),
+    }
     idx_path.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -705,6 +758,48 @@ async def detect_rag_inconsistencies(
     return {"has_any": bool(findings), "matches": findings}
 
 
+async def check_existing_rag_conflicts(
+    txt_path: Path,
+    chunks_dir: Path,
+    scope: str,
+    owner_id: int | None,
+    user: dict,
+) -> None:
+    if not txt_path.exists():
+        return
+    chunks = load_chunk_file(chunks_dir, txt_path.stem)
+    conflicts = await detect_rag_inconsistencies(
+        new_name=txt_path.name,
+        new_stem=txt_path.stem,
+        new_chunks=chunks,
+        scope=scope,
+        user=user,
+    )
+    if txt_path.exists():
+        save_conflicts_to_index(txt_path.parent, txt_path.stem, conflicts)
+
+
+def schedule_existing_conflict_check(
+    txt_path: Path,
+    chunks_dir: Path,
+    scope: str,
+    owner_id: int | None,
+    user: dict,
+) -> None:
+    key = f"{scope}:{owner_id or 'global'}:{txt_path.stem}"
+    if key in CONFLICT_CHECK_TASKS:
+        return
+    CONFLICT_CHECK_TASKS.add(key)
+
+    async def runner():
+        try:
+            await check_existing_rag_conflicts(txt_path, chunks_dir, scope, owner_id, user)
+        finally:
+            CONFLICT_CHECK_TASKS.discard(key)
+
+    asyncio.create_task(runner())
+
+
 def build_document_description(text: str, max_chars: int = 260) -> str:
     cleaned = re.sub(r"\s+", " ", normalize_document_text(text))
     if len(cleaned) <= max_chars:
@@ -975,6 +1070,8 @@ def append_file_entries(
     scope: str,
     owner_id: int | None = None,
     owner_username: str | None = None,
+    conflict_user: dict | None = None,
+    schedule_missing_conflicts: bool = False,
 ) -> None:
     index = prune_index_entries(files_dir, "files_index.json")
     conflicts = prune_index_entries(files_dir, "conflicts_index.json")
@@ -989,6 +1086,20 @@ def append_file_entries(
                 chunks = int(data.get("total") or 0)
             except Exception:
                 pass
+        has_conflict_record = stem in conflicts
+        if indexed and schedule_missing_conflicts and conflict_user is not None and not has_conflict_record:
+            schedule_existing_conflict_check(
+                txt_path=txt_path,
+                chunks_dir=chunks_dir,
+                scope=scope,
+                owner_id=owner_id,
+                user=conflict_user,
+            )
+            inconsistencies = conflicts_response(None, "checking")
+        elif has_conflict_record:
+            inconsistencies = conflicts_response(conflicts.get(stem), "checked")
+        else:
+            inconsistencies = conflicts_response(None, "unindexed" if not indexed else "unchecked")
         result.append(
             {
                 "name": txt_path.name,
@@ -999,7 +1110,7 @@ def append_file_entries(
                 "indexed": indexed,
                 "chunks": chunks,
                 "description": index.get(stem, ""),
-                "inconsistencies": conflicts.get(stem, {"has_any": False, "matches": []}),
+                "inconsistencies": inconsistencies,
             }
         )
 
@@ -1248,12 +1359,27 @@ async def health(user: dict = Depends(get_current_user)):
 @app.get("/files")
 async def list_files(user: dict = Depends(get_current_user)):
     result = []
-    append_file_entries(result, GLOBAL_FILES_DIR, GLOBAL_CHUNKS_DIR, "global")
+    append_file_entries(
+        result,
+        GLOBAL_FILES_DIR,
+        GLOBAL_CHUNKS_DIR,
+        "global",
+        conflict_user=user,
+        schedule_missing_conflicts=True,
+    )
     if user["role"] == "admin":
         conn = get_db()
-        rows = conn.execute("SELECT id, username FROM users ORDER BY id ASC").fetchall()
+        rows = conn.execute(
+            "SELECT id, username, role, full_name FROM users ORDER BY id ASC"
+        ).fetchall()
         conn.close()
         for row in rows:
+            conflict_user = {
+                "id": row["id"],
+                "username": row["username"],
+                "full_name": row["full_name"] or row["username"],
+                "role": normalize_role(row["role"]),
+            }
             append_file_entries(
                 result,
                 user_files_dir(row["id"]),
@@ -1261,6 +1387,8 @@ async def list_files(user: dict = Depends(get_current_user)):
                 "user",
                 owner_id=row["id"],
                 owner_username=row["username"],
+                conflict_user=conflict_user,
+                schedule_missing_conflicts=True,
             )
     else:
         append_file_entries(
@@ -1270,6 +1398,8 @@ async def list_files(user: dict = Depends(get_current_user)):
             "user",
             owner_id=user["id"],
             owner_username=user["username"],
+            conflict_user=user,
+            schedule_missing_conflicts=True,
         )
     return {"files": result}
 
@@ -1352,6 +1482,7 @@ async def delete_file(
                     idx_path.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
             except Exception:
                 pass
+    prune_orphaned_conflict_matches(files_dir)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"File '{stem}' not found")
     return {"status": "ok", "deleted": deleted}

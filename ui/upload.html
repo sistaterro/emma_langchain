@@ -869,6 +869,7 @@
     let uploadAlerts = [];
     let indexedFilesCache = [];
     let selectedIndexed = new Set();
+    let conflictPollActive = false;
 
     function getToken() { return localStorage.getItem('emma_token'); }
 
@@ -1128,14 +1129,36 @@
       `;
     }
 
+    function hasPendingConflictChecks(files = indexedFilesCache) {
+      return files.some(f => f.inconsistencies && f.inconsistencies.status === 'checking');
+    }
+
     async function pollIndexedAfterUpload(attempts = 8, delayMs = 2500) {
       for (let i = 0; i < attempts; i++) {
         await new Promise(resolve => setTimeout(resolve, delayMs));
         await loadIndexed();
         const hasIndexing = indexedFilesCache.some(f => !f.indexed);
+        const hasCheckingConflicts = hasPendingConflictChecks();
         const hasConflicts = indexedFilesCache.some(f => f.inconsistencies && f.inconsistencies.has_any);
+        if (!hasIndexing && !hasCheckingConflicts) return;
         if (!hasIndexing && hasConflicts) return;
       }
+    }
+
+    function ensureConflictPoll() {
+      if (conflictPollActive || !hasPendingConflictChecks()) return;
+      conflictPollActive = true;
+      (async () => {
+        try {
+          for (let i = 0; i < 12; i++) {
+            await new Promise(resolve => setTimeout(resolve, 2500));
+            await loadIndexed();
+            if (!hasPendingConflictChecks()) break;
+          }
+        } finally {
+          conflictPollActive = false;
+        }
+      })();
     }
 
     // ── UPLOAD ─────────────────────────────────────────────
@@ -1209,6 +1232,7 @@
         renderIndexed(data.files || []);
         renderPending();
         updateSelectionActions();
+        ensureConflictPoll();
       } catch (_) { }
     }
 
@@ -1243,6 +1267,8 @@
           : '';
         const canDelete = f.scope === 'user' || (currentUser && currentUser.role === 'admin');
         const hasConflicts = !!(f.inconsistencies && f.inconsistencies.has_any);
+        const conflictStatus = (f.inconsistencies && f.inconsistencies.status) || 'unchecked';
+        const checkingConflicts = !hasConflicts && conflictStatus === 'checking';
         const conflictCount = hasConflicts
           ? (f.inconsistencies.matches || []).reduce((sum, m) => sum + ((m.items || []).length || 0), 0)
           : 0;
@@ -1257,14 +1283,15 @@
             <div class="file-meta">
               ${f.chunks} chunks · ${escHtml(f.description || 'No description')}
               ${hasConflicts ? `<span class="alert-tag sev-medium" style="margin-left:8px">CONFLICTS ${conflictCount}</span>` : ''}
+              ${checkingConflicts ? `<span class="alert-tag sev-low" style="margin-left:8px">CHECKING CONFLICTS</span>` : ''}
             </div>
             ${hasConflicts ? `<div class="alert-summary" style="margin-top:6px">${escHtml((f.inconsistencies.matches || [])[0]?.summary || 'Possible factual conflicts detected')}</div>` : ''}
             ${hasConflicts ? renderConflictDetails(f.inconsistencies) : ''}
             ${f.indexed ? `<div class="progress-wrap"><div class="progress-bar" style="width:100%"></div></div>` : ''}
           </div>
           <div class="file-status">
-            <div class="status-dot ${hasConflicts ? 'error' : (f.indexed ? 'ready' : 'indexing')}"></div>
-            <span class="status-text ${hasConflicts ? 'error' : (f.indexed ? 'ready' : 'indexing')}">${hasConflicts ? 'Conflicts' : (f.indexed ? 'Ready' : 'Indexing')}</span>
+            <div class="status-dot ${hasConflicts ? 'error' : (checkingConflicts || !f.indexed ? 'indexing' : 'ready')}"></div>
+            <span class="status-text ${hasConflicts ? 'error' : (checkingConflicts || !f.indexed ? 'indexing' : 'ready')}">${hasConflicts ? 'Conflicts' : (checkingConflicts ? 'Checking' : (f.indexed ? 'Ready' : 'Indexing'))}</span>
           </div>
           <a class="file-remove" href="${BASE_URL}/files/${f.scope}/${f.stem}/download?token=${getToken()}" download title="Download">↓</a>
           ${canDelete ? `<button class="file-remove" onclick="deleteFile('${f.scope}','${f.stem}')" title="Delete">×</button>` : ''}

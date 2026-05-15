@@ -171,8 +171,11 @@ class CoreEndpointTests(unittest.TestCase):
 
         files_response = self.client.get("/files", headers=headers)
         self.assertEqual(files_response.status_code, 200, files_response.text)
-        names = [file["name"] for file in files_response.json()["files"]]
+        files = files_response.json()["files"]
+        names = [file["name"] for file in files]
         self.assertIn("policy.txt", names)
+        policy = next(file for file in files if file["name"] == "policy.txt")
+        self.assertIn(policy["inconsistencies"]["status"], {"checking", "checked"})
 
         download_response = self.client.get("/files/user/policy/download", headers=headers)
         self.assertEqual(download_response.status_code, 200, download_response.text)
