@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import json
 import os
 import re
@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from prompts import build_inconsistency_prompt, build_rag_prompt
+from prompts import build_inconsistency_prompt, build_rag_prompt, build_safety_prompt
 
 
 @asynccontextmanager
@@ -694,14 +694,15 @@ def load_visible_context_chunks(user: dict) -> list[dict]:
     return context_chunks
 
 
-def build_chat_messages_with_all_visible_chunks(req: ChatRequest, user: dict) -> list[Message]:
+def build_chat_messages_with_all_visible_chunks(req: ChatRequest, user: dict, context_chunks: list[dict] | None = None) -> list[Message]:
     if not req.messages:
         raise HTTPException(status_code=400, detail="No messages to answer")
     question = req.messages[-1].content.strip()
     if not question:
         raise HTTPException(status_code=400, detail="The last message is empty")
 
-    context_chunks = load_visible_context_chunks(user)
+    if context_chunks is None:
+        context_chunks = load_visible_context_chunks(user)
     if not context_chunks:
         return req.messages
 
@@ -1018,6 +1019,114 @@ async def generate_ai_reply(model: dict, messages: list[Message]) -> str:
     response = await chat_model.ainvoke(to_langchain_messages(messages))
     return langchain_response_text(response)
 
+
+
+def default_safety_assessment() -> dict:
+    return {
+        "label": "SAFE",
+        "confidence": 0.0,
+        "summary": "No clear manipulation patterns detected",
+        "signals": [],
+        "evidence": [],
+    }
+
+
+def normalize_safety_assessment(data: dict | None) -> dict:
+    default = default_safety_assessment()
+    if not isinstance(data, dict):
+        return default
+
+    label = str(data.get("label", default["label"])).strip().upper()
+    if label not in {"SAFE", "REVIEW", "SUSPICIOUS"}:
+        label = default["label"]
+
+    try:
+        confidence = float(data.get("confidence", default["confidence"]))
+    except (TypeError, ValueError):
+        confidence = default["confidence"]
+    confidence = max(0.0, min(confidence, 1.0))
+
+    summary = str(data.get("summary", default["summary"])).strip() or default["summary"]
+    signals = [str(item).strip() for item in (data.get("signals") or []) if str(item).strip()][:6]
+    evidence = [str(item).strip() for item in (data.get("evidence") or []) if str(item).strip()][:4]
+
+    return {
+        "label": label,
+        "confidence": round(confidence, 3),
+        "summary": summary,
+        "signals": signals,
+        "evidence": evidence,
+    }
+
+
+async def analyze_user_message_safety(message: str, model: dict) -> dict:
+    if not message.strip():
+        return default_safety_assessment()
+    prompt = build_safety_prompt(message)
+    try:
+        reply = await generate_ai_reply(model, [Message(role="user", content=prompt)])
+        return normalize_safety_assessment(extract_json_object(reply))
+    except Exception:
+        return {
+            **default_safety_assessment(),
+            "summary": "Safety analysis unavailable",
+        }
+
+
+def should_persist_chat_audit(safety: dict) -> bool:
+    return safety.get("label") in {"REVIEW", "SUSPICIOUS"}
+
+
+def rotate_chat_audit_logs(max_files: int = 100, delete_count: int = 50) -> None:
+    try:
+        files = sorted(LOGS_DIR.glob("*.json"), key=lambda path: path.stat().st_mtime)
+        if len(files) < max_files:
+            return
+        for path in files[:delete_count]:
+            path.unlink(missing_ok=True)
+    except Exception as exc:
+        print(f"[audit] failed to rotate chat audit logs: {exc}")
+
+
+def persist_suspicious_chat_audit_log(record: dict) -> None:
+    if not should_persist_chat_audit(record.get("safety", {})):
+        return
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        rotate_chat_audit_logs()
+        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S%fZ")
+        path = LOGS_DIR / f"suspicious_{ts}_{secrets.token_hex(4)}.json"
+        path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        print(f"[audit] failed to persist chat audit log: {exc}")
+
+
+def build_chat_audit_record(
+    req: ChatRequest,
+    user: dict,
+    model: dict,
+    question: str,
+    safety: dict,
+    context_chunks: list[dict],
+) -> dict:
+    sources = sorted({str(chunk.get("source", "unknown")).split("#", 1)[0] for chunk in context_chunks})
+    return {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "audit_type": "suspicious_chat",
+        "user_id": user["id"],
+        "username": user["username"],
+        "conversation_id": req.conversation_id,
+        "model": model["id"],
+        "question": question,
+        "question_length": len(question),
+        "safety": safety,
+        "rag": {
+            "active": bool(context_chunks),
+            "visible_chunk_count": len(context_chunks),
+            "visible_source_count": len(sources),
+            "visible_sources": sources,
+        },
+    }
 
 def store_chat_messages(conversation_id: str | None, user_id: int, messages: list[Message], reply: str) -> None:
     if not conversation_id:
@@ -1651,9 +1760,25 @@ async def chat(
     user: dict = Depends(get_current_user),
 ):
     model = resolve_model(req.model)
-    ai_messages = build_chat_messages_with_all_visible_chunks(req, user)
+    if not req.messages:
+        raise HTTPException(status_code=400, detail="No messages to answer")
+    question = req.messages[-1].content.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="The last message is empty")
+
+    context_chunks = load_visible_context_chunks(user)
+    safety = await analyze_user_message_safety(question, model)
+    ai_messages = build_chat_messages_with_all_visible_chunks(req, user, context_chunks)
     reply = await generate_ai_reply(model, ai_messages)
     store_chat_messages(req.conversation_id, user["id"], req.messages, reply)
+
+    audit_record = build_chat_audit_record(req, user, model, question, safety, context_chunks)
+    audit_record["response"] = {
+        "tag": response_tag(reply),
+        "length": len(reply),
+    }
+    persist_suspicious_chat_audit_log(audit_record)
+
     if req.stream:
         return StreamingResponse(stream_text_as_json_lines(reply), media_type="application/x-ndjson")
     return {
@@ -1661,3 +1786,8 @@ async def chat(
         "tag": response_tag(reply),
         "message": {"role": "assistant", "content": reply},
     }
+
+
+
+
+

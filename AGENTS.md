@@ -1,4 +1,4 @@
-# AGENTS.md
+﻿# AGENTS.md
 
 ## Purpose
 
@@ -166,6 +166,8 @@ Practical rule:
 - `/files` is responsible for surfacing persisted conflict state and scheduling missing checks for indexed RAGs that have no conflict record yet.
 - When deleting RAGs, prune both direct `conflicts_index.json` entries and orphaned `matches` that reference deleted files.
 - The upload UI should poll `/files` while files are indexing or conflict checks are still marked as `checking`.
+- Chat safety analysis uses `build_safety_prompt(...)` before generation and writes JSON audit files in `logs/chat_audit/` only for `REVIEW` or `SUSPICIOUS` messages.
+- Audit logs should never include API keys; keep records focused on user/message metadata, safety assessment, RAG context summary, and response tag/length.
 
 ## UX And Frontend
 
@@ -252,3 +254,4 @@ The best contribution in this project is usually to:
 - preserve current tested behavior deliberately instead of rebuilding large monoliths;
 - reduce surprises;
 - and leave each change easier to understand than before.
+
