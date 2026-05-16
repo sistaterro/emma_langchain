@@ -61,7 +61,7 @@ Ollama is not required for the current rebuilt path.
 ### 1. Clone The Repository
 
 ```bash
-git clone https://github.com/yourusername/emma-rag.git
+git clone https://github.com/sistaterro/emma_langchain.git
 cd emma-rag
 ```
 
