@@ -165,7 +165,7 @@ emma-rag/
 |-- run.bat             # Windows launcher
 |-- test.bat            # Test sequencer
 |-- api_keys.json       # Local API credentials, ignored by Git
-|-- emma.db             # SQLite database
+|-- emma.db             # Local SQLite runtime database, ignored by Git
 |-- files/              # Uploaded user/global .txt documents
 |-- chunks/             # Auto-generated JSON chunks and conflict indexes
 |-- tests/              # Unit tests
@@ -178,7 +178,7 @@ emma-rag/
     `-- upload.html     # RAG manager
 ```
 
-Do not commit real API keys or local runtime database changes unless that is explicitly intended.
+Do not commit real API keys. emma.db is local runtime state and is ignored by Git.
 
 ---
 
@@ -274,10 +274,11 @@ The tests mock provider calls and focus on backend behavior, permissions, RAG in
 - `server.py` is still the active backend boundary and remains fairly compact for now.
 - `prompts.py` is the canonical place for active prompt builders.
 - Startup initialization uses FastAPI lifespan handlers.
-- `emma.db` often reflects local working state and should not be committed casually.
+- `emma.db` is generated locally on first run and ignored by Git.
 
 ---
 
 ## License
 
 MIT - free to use, modify, and distribute.
+
