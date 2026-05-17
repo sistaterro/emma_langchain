@@ -3,7 +3,10 @@
 venv/
 env/
 
-# Knowledge base — user data, never commit
+# Runtime database
+emma.db
+
+# Knowledge base - user data, never commit
 files/
 chunks/
 files_index.json
@@ -17,7 +20,6 @@ anthropic_api.txt
 __pycache__/
 *.py[cod]
 *.pyo
-
 
 # OS
 .DS_Store
