@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="icon" type="image/svg+xml" href="assets/emma-favicon.svg">
+  <link rel="icon" type="image/svg+xml" href="assets/evil-emma-favicon.svg">
   <title>Chat Evil Emma</title>
   <link
     href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@300;400;500;600;700&display=swap"
@@ -685,6 +685,19 @@
       color: #ffffff;
     }
 
+    .msg-wrap.assistant[data-streaming="true"] .msg-bubble::after {
+      content: '';
+      display: inline-block;
+      width: 7px;
+      height: 1.1em;
+      margin-left: 4px;
+      border-radius: 2px;
+      background: var(--red-hot);
+      box-shadow: 0 0 10px var(--red-glow);
+      vertical-align: -0.18em;
+      animation: streamCursorBlink 0.9s ease-in-out infinite;
+    }
+
     .msg-bubble code {
       font-family: var(--mono);
       font-size: 15px;
@@ -767,6 +780,18 @@
       50% {
         background: var(--red-hot);
         box-shadow: 0 0 10px var(--red-glow), 0 0 20px rgba(204, 0, 0, 0.3);
+      }
+    }
+
+    @keyframes streamCursorBlink {
+
+      0%,
+      100% {
+        opacity: 0.25;
+      }
+
+      50% {
+        opacity: 1;
       }
     }
 
@@ -1243,12 +1268,7 @@
         <span class="field-label">Active Model</span>
         <div class="select-wrap">
           <select id="modelSelect" onchange="onModelChange()">
-            <option value="deepseek-r1">deepseek-r1</option>
-            <option value="deepseek-v2">deepseek-v2</option>
-            <option value="qwen2.5">qwen2.5</option>
-            <option value="qwen2.5-coder">qwen2.5-coder</option>
-            <option value="qwen3.5:9b">qwen3.5:9b</option>
-            <option value="llama3.2">llama3.2</option>
+            <option value="">INITIALIZING</option>
           </select>
         </div>
       </div>
@@ -1268,7 +1288,7 @@
       <div id="convList"></div>
 
       <div class="sidebar-footer">
-        <span class="footer-id">EMMA v1.0</span>
+        <span class="footer-id">EMMA v2.0</span>
         <button class="btn-clear" onclick="clearAllConversations()">PURGE ALL</button>
       </div>
     </div>
@@ -1281,7 +1301,7 @@
         <div class="chat-title" id="chatTitle">// awaiting input</div>
         <div class="header-right">
           <span class="meta-tag" id="msgCountTag"></span>
-          <span class="meta-tag active-model" id="modelBadge">deepseek-r1</span>
+          <span class="meta-tag active-model" id="modelBadge">INITIALIZING</span>
         </div>
       </div>
 
@@ -1349,7 +1369,7 @@
       MOCK_MODE: false,
       HEALTH_INTERVAL: 10000,
       STREAM: true,
-      MAX_CONTEXT_MESSAGES: 12,
+      MAX_CONTEXT_MESSAGES: 0,
       KEEP_ALIVE: '30m',
     };
 
@@ -1359,7 +1379,8 @@
     let state = {
       conversations: {},
       activeId: null,
-      model: 'qwen3.5:9b',
+      model: '',
+      modelLabel: '',
       isGenerating: false,
       abortController: null,
     };
@@ -1367,21 +1388,24 @@
     // ═══════════════════════════
     //  PERSISTENCE
     // ═══════════════════════════
-    function save() {
-      localStorage.setItem('cds_convs', JSON.stringify(state.conversations));
-      localStorage.setItem('cds_active', state.activeId || '');
-      localStorage.setItem('cds_model', state.model);
+    function getToken() { return localStorage.getItem('emma_token'); }
+
+    async function authFetch(path, options = {}) {
+      const token = getToken();
+      if (!options.headers) options.headers = {};
+      if (token) options.headers['Authorization'] = `Bearer ${token}`;
+      const res = await fetch(CONFIG.BASE_URL + path, options);
+      if (res.status === 401) {
+        localStorage.removeItem('emma_token');
+        window.location.href = '/ui/login.html';
+        throw new Error('Unauthorized');
+      }
+      return res;
     }
 
-    function load() {
-      try {
-        const c = localStorage.getItem('cds_convs');
-        if (c) state.conversations = JSON.parse(c);
-        const a = localStorage.getItem('cds_active');
-        if (a && state.conversations[a]) state.activeId = a;
-        const m = localStorage.getItem('cds_model');
-        if (m) state.model = m;
-      } catch (e) { }
+    function saveLocal() {
+      localStorage.setItem('emma_active', state.activeId || '');
+      localStorage.setItem('emma_model', state.model);
     }
 
     // ═══════════════════════════
@@ -1389,32 +1413,79 @@
     // ═══════════════════════════
     function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 
-    function newConversation() {
-      const id = genId();
-      state.conversations[id] = { id, title: 'new session', model: state.model, messages: [], createdAt: Date.now() };
-      state.activeId = id;
-      save(); renderSidebar(); renderChat();
+    async function loadConvMessages(id) {
+      try {
+        const res = await authFetch(`/conversations/${id}`);
+        const data = await res.json();
+        if (state.conversations[id]) {
+          state.conversations[id].messages = (data.messages || []).map(m => ({
+            id: m.id, role: m.role, content: m.content,
+          }));
+        }
+      } catch (e) { if (e.message !== 'Unauthorized') console.error(e); }
     }
 
-    function switchConversation(id) {
-      state.activeId = id;
-      save(); renderSidebar(); renderChat();
+    async function loadFromServer() {
+      try {
+        const res = await authFetch('/conversations');
+        const data = await res.json();
+        state.conversations = {};
+        for (const c of (data.conversations || [])) {
+          state.conversations[c.id] = { ...c, messages: [] };
+        }
+        const m = localStorage.getItem('emma_model');
+        if (m) state.model = m;
+        const a = localStorage.getItem('emma_active');
+        if (a && state.conversations[a]) {
+          state.activeId = a;
+          await loadConvMessages(a);
+        }
+      } catch (e) { if (e.message !== 'Unauthorized') console.error(e); }
     }
 
-    function deleteConversation(id, e) {
-      e.stopPropagation();
-      delete state.conversations[id];
-      if (state.activeId === id) {
-        const ids = Object.keys(state.conversations);
-        state.activeId = ids.length ? ids[ids.length - 1] : null;
+    async function newConversation() {
+      try {
+        const res = await authFetch('/conversations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: 'new session', model: state.model }),
+        });
+        const conv = await res.json();
+        state.conversations[conv.id] = { ...conv, messages: [] };
+        state.activeId = conv.id;
+        saveLocal(); renderSidebar(); renderChat();
+      } catch (e) { if (e.message !== 'Unauthorized') console.error(e); }
+    }
+
+    async function switchConversation(id) {
+      state.activeId = id;
+      if (!state.conversations[id]?.messages?.length) {
+        await loadConvMessages(id);
       }
-      save(); renderSidebar(); renderChat();
+      saveLocal(); renderSidebar(); renderChat();
     }
 
-    function clearAllConversations() {
+    async function deleteConversation(id, e) {
+      e.stopPropagation();
+      try {
+        await authFetch(`/conversations/${id}`, { method: 'DELETE' });
+        delete state.conversations[id];
+        if (state.activeId === id) {
+          const ids = Object.keys(state.conversations);
+          state.activeId = ids.length ? ids[0] : null;
+        }
+        saveLocal(); renderSidebar(); renderChat();
+      } catch (e) { if (e.message !== 'Unauthorized') console.error(e); }
+    }
+
+    async function clearAllConversations() {
       if (!confirm('PURGE ALL SESSIONS?')) return;
+      const ids = Object.keys(state.conversations);
+      for (const id of ids) {
+        await authFetch(`/conversations/${id}`, { method: 'DELETE' }).catch(() => {});
+      }
       state.conversations = {}; state.activeId = null;
-      save(); renderSidebar(); renderChat();
+      saveLocal(); renderSidebar(); renderChat();
     }
 
     function activeConv() { return state.activeId ? state.conversations[state.activeId] : null; }
@@ -1424,7 +1495,11 @@
     // ═══════════════════════════
     function renderSidebar() {
       const list = document.getElementById('convList');
-      const convs = Object.values(state.conversations).sort((a, b) => b.createdAt - a.createdAt);
+      const convs = Object.values(state.conversations).sort((a, b) => {
+        const bTime = new Date(b.updated_at || b.created_at || b.createdAt || 0).getTime();
+        const aTime = new Date(a.updated_at || a.created_at || a.createdAt || 0).getTime();
+        return bTime - aTime;
+      });
       if (!convs.length) {
         list.innerHTML = `<div class="conv-empty">// no sessions<br>start a new one</div>`;
         return;
@@ -1452,6 +1527,7 @@
 
       if (!conv || !conv.messages.length) {
         msgs.style.display = 'none';
+        msgs.innerHTML = '';
         empty.style.display = 'flex';
         title.textContent = '// awaiting input';
         countTag.textContent = '';
@@ -1470,11 +1546,14 @@
     }
 
     function buildMsgHtml(m) {
+      const name = m.role === 'user' ? 'USER' : (m.model || 'ASSISTANT').toUpperCase();
+      const messageId = m.id ? ` data-message-id="${escAttr(m.id)}"` : '';
+      const streaming = m.streaming ? ' data-streaming="true"' : '';
       return `
-    <div class="msg-wrap ${m.role}">
+    <div class="msg-wrap ${m.role}"${messageId}${streaming}>
       <div class="msg-role-line">
         <span class="role-dot"></span>
-        ${m.role === 'user' ? 'USER' : (m.model || 'ASSISTANT').toUpperCase()}
+        ${escHtml(name)}
       </div>
       <div class="msg-bubble">${fmtContent(m.content)}</div>
     </div>
@@ -1482,6 +1561,7 @@
     }
 
     function fmtContent(text) {
+      text = String(text || '');
       text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) =>
         `<pre><code>${escHtml(code.trim())}</code></pre>`);
       text = text.replace(/`([^`]+)`/g, (_, c) => `<code>${escHtml(c)}</code>`);
@@ -1493,10 +1573,10 @@
       const conv = activeConv();
       if (!conv) return;
       conv.messages.push(msg);
-      if (conv.messages.length === 1 && msg.role === 'user') {
+      if (conv.messages.filter(m => m.role === 'user').length === 1 && msg.role === 'user') {
         conv.title = msg.content.slice(0, 44) + (msg.content.length > 44 ? '…' : '');
       }
-      save(); renderSidebar();
+      renderSidebar();
 
       const msgs = document.getElementById('messages');
       const empty = document.getElementById('emptyState');
@@ -1536,17 +1616,19 @@
       cc.textContent = len > 80 ? len : '';
     }
 
-    function sendSuggestion(btn) {
-      if (!state.activeId) newConversation();
+    async function sendSuggestion(btn) {
+      if (!state.activeId) await newConversation();
       document.getElementById('msgInput').value = btn.textContent.replace(/^_\s/, '');
       handleInput();
       sendMessage();
     }
 
     function onModelChange() {
-      state.model = document.getElementById('modelSelect').value;
-      document.getElementById('modelBadge').textContent = state.model;
-      save();
+      const sel = document.getElementById('modelSelect');
+      state.model = sel.value;
+      state.modelLabel = sel.selectedOptions[0]?.textContent || state.model;
+      document.getElementById('modelBadge').textContent = state.modelLabel || state.model || 'NO API';
+      saveLocal();
     }
 
     // ═══════════════════════════
@@ -1556,7 +1638,11 @@
       const ta = document.getElementById('msgInput');
       const text = ta.value.trim();
       if (!text || state.isGenerating) return;
-      if (!state.activeId) newConversation();
+      if (!state.model) {
+        appendMsg({ id: genId(), role: 'assistant', content: '// NO AI API CONFIGURED', model: 'EVIL EMMA' });
+        return;
+      }
+      if (!state.activeId) await newConversation();
 
       ta.value = ''; ta.style.height = 'auto';
       document.getElementById('sendBtn').disabled = true;
@@ -1573,12 +1659,12 @@
         const reply = await fetchReply(requestMessages, typing);
         typing.remove();
         if (!CONFIG.STREAM) {
-          appendMsg({ id: genId(), role: 'assistant', content: reply, model: state.model });
+          appendMsg({ id: genId(), role: 'assistant', content: reply, model: state.modelLabel || state.model });
         }
       } catch (err) {
         typing.remove();
         if (err.name !== 'AbortError') {
-          appendMsg({ id: genId(), role: 'assistant', content: `// ERROR: ${err.message}`, model: state.model });
+          appendMsg({ id: genId(), role: 'assistant', content: `// ERROR: ${err.message}`, model: state.modelLabel || state.model });
         }
       } finally {
         setGenerating(false);
@@ -1608,7 +1694,7 @@
       wrap.innerHTML = `
     <div class="msg-role-line">
       <span class="role-dot"></span>
-      ${state.model.toUpperCase()}
+      ${(state.modelLabel || state.model || 'EVIL EMMA').toUpperCase()}
     </div>
     <div class="typing-indicator">
       <div class="typing-dot"></div>
@@ -1625,7 +1711,10 @@
 
     function getRequestMessages(messages) {
       if (!Array.isArray(messages) || !messages.length) return [];
-      const max = Math.max(1, CONFIG.MAX_CONTEXT_MESSAGES || messages.length);
+      if (!CONFIG.MAX_CONTEXT_MESSAGES) {
+        return messages.map(m => ({ role: m.role, content: m.content }));
+      }
+      const max = Math.max(1, CONFIG.MAX_CONTEXT_MESSAGES);
       return messages.slice(-max).map(m => ({ role: m.role, content: m.content }));
     }
 
@@ -1633,9 +1722,8 @@
       const conv = activeConv();
       if (!conv) return null;
 
-      const msg = { id: genId(), role: 'assistant', content: '', model: state.model };
+      const msg = { id: genId(), role: 'assistant', content: '', model: state.modelLabel || state.model, streaming: true };
       conv.messages.push(msg);
-      save();
       renderSidebar();
 
       const msgs = document.getElementById('messages');
@@ -1653,12 +1741,22 @@
       return msg;
     }
 
-    function updateAssistantStreamMsg(msg, content) {
+    function findMessageWrap(msg) {
+      if (!msg?.id) return null;
+      return Array.from(document.querySelectorAll('.msg-wrap')).find(wrap => wrap.dataset.messageId === msg.id) || null;
+    }
+
+    function updateAssistantStreamMsg(msg, content, done = false) {
       if (!msg) return;
       msg.content = content;
-      const bubble = document.querySelector(`.msg-wrap.assistant:last-child .msg-bubble`);
+      msg.streaming = !done;
+      const wrap = findMessageWrap(msg);
+      if (wrap) {
+        if (done) delete wrap.dataset.streaming;
+        else wrap.dataset.streaming = 'true';
+      }
+      const bubble = wrap?.querySelector('.msg-bubble');
       if (bubble) bubble.innerHTML = fmtContent(content);
-      save();
       scrollBottom();
     }
 
@@ -1729,29 +1827,31 @@
       state.abortController = new AbortController();
       const res = await fetch(`${CONFIG.BASE_URL}${CONFIG.CHAT_ENDPOINT}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getToken()}` },
         signal: state.abortController.signal,
         body: JSON.stringify({
           model: state.model,
           messages,
           stream: CONFIG.STREAM,
           keep_alive: CONFIG.KEEP_ALIVE,
+          conversation_id: state.activeId,
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
       if (!CONFIG.STREAM) {
         const data = await res.json();
-        return data?.text ?? JSON.stringify(data);
+        return data?.message?.content ?? data?.choices?.[0]?.message?.content ?? JSON.stringify(data);
       }
 
       const reader = res.body?.getReader();
       if (!reader) throw new Error('Streaming not supported by backend');
 
+      typing?.remove();
+      const assistantMsg = createAssistantStreamMsg();
       const decoder = new TextDecoder();
       let buffer = '';
       let reply = '';
-      let assistantMsg = null;
 
       while (true) {
         const { value, done } = await reader.read();
@@ -1774,15 +1874,12 @@
           for (const chunk of objects) {
             const piece = chunk?.text || '';
             if (piece) {
-              if (!assistantMsg) {
-                typing?.remove();
-                assistantMsg = createAssistantStreamMsg();
-              }
               reply += piece;
               updateAssistantStreamMsg(assistantMsg, reply);
             }
 
             if (chunk?.done) {
+              updateAssistantStreamMsg(assistantMsg, reply, true);
               return reply;
             }
           }
@@ -1795,24 +1892,17 @@
         for (const chunk of objects) {
           const piece = chunk?.text || '';
           if (piece) {
-            if (!assistantMsg) {
-              typing?.remove();
-              assistantMsg = createAssistantStreamMsg();
-            }
             reply += piece;
             updateAssistantStreamMsg(assistantMsg, reply);
           }
           if (chunk?.done) {
+            updateAssistantStreamMsg(assistantMsg, reply, true);
             return reply;
           }
         }
       }
 
-      if (!assistantMsg) {
-        typing?.remove();
-        assistantMsg = createAssistantStreamMsg();
-      }
-      updateAssistantStreamMsg(assistantMsg, reply);
+      updateAssistantStreamMsg(assistantMsg, reply, true);
       return reply;
     }
 
@@ -1829,6 +1919,32 @@
     // ═══════════════════════════
     //  HEALTH CHECK
     // ═══════════════════════════
+    function renderModelOptions(models) {
+      const sel = document.getElementById('modelSelect');
+      const normalized = (models || []).map(m => typeof m === 'string' ? { id: m, label: m } : m);
+      if (!normalized.length) {
+        state.model = '';
+        state.modelLabel = '';
+        sel.innerHTML = '<option value="">NO API CONFIGURED</option>';
+        document.getElementById('modelBadge').textContent = 'NO API';
+        return;
+      }
+
+      const saved = localStorage.getItem('emma_model');
+      const selected = normalized.find(m => m.id === state.model)
+        || normalized.find(m => m.id === saved)
+        || normalized[0];
+      state.model = selected.id;
+      state.modelLabel = selected.label || selected.id;
+      sel.innerHTML = normalized.map(m => {
+        const label = m.label || m.id;
+        const provider = m.provider ? `${m.provider.toUpperCase()} / ` : '';
+        return `<option value="${escAttr(m.id)}" ${m.id === state.model ? 'selected' : ''}>${escHtml(provider + label)}</option>`;
+      }).join('');
+      document.getElementById('modelBadge').textContent = state.modelLabel;
+      saveLocal();
+    }
+
     async function checkHealth() {
       const dot = document.getElementById('statusDot');
       const text = document.getElementById('statusText');
@@ -1846,7 +1962,10 @@
       }
 
       try {
-        const res = await fetch(`${CONFIG.BASE_URL}${CONFIG.HEALTH_ENDPOINT}`, { signal: AbortSignal.timeout(4000) });
+        const res = await fetch(`${CONFIG.BASE_URL}${CONFIG.HEALTH_ENDPOINT}`, {
+          headers: { 'Authorization': `Bearer ${getToken()}` },
+          signal: AbortSignal.timeout(4000)
+        });
         if (res.ok) {
           dot.className = 'status-dot online';
           text.className = 'status-text online';
@@ -1855,10 +1974,7 @@
           try {
             const data = await res.json();
             const models = data?.models || [];
-            if (models.length) {
-              const sel = document.getElementById('modelSelect');
-              sel.innerHTML = models.map(m => `<option value="${m}" ${m === state.model ? 'selected' : ''}>${m}</option>`).join('');
-            }
+            renderModelOptions(models);
           } catch (_) { }
         } else { throw new Error(); }
       } catch {
@@ -1873,7 +1989,11 @@
     //  UTILS
     // ═══════════════════════════
     function escHtml(s) {
-      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function escAttr(s) {
+      return escHtml(s).replace(/"/g, '&quot;');
     }
 
     // ═══════════════════════════
@@ -2012,10 +2132,36 @@
     // ═══════════════════════════
     //  INIT
     // ═══════════════════════════
-    function init() {
-      load();
+    async function logout() {
+      const token = getToken();
+      if (token) {
+        await fetch(`${CONFIG.BASE_URL}/auth/logout`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        }).catch(() => {});
+      }
+      localStorage.removeItem('emma_token');
+      localStorage.removeItem('emma_user');
+      window.location.href = '/ui/login.html';
+    }
+
+    async function init() {
+      const token = getToken();
+      if (!token) { window.location.href = '/ui/login.html'; return; }
+      const meRes = await fetch(`${CONFIG.BASE_URL}/auth/me`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      }).catch(() => null);
+      if (!meRes || !meRes.ok) {
+        localStorage.removeItem('emma_token');
+        window.location.href = '/ui/login.html';
+        return;
+      }
+
+      const m = localStorage.getItem('emma_model');
+      if (m) state.model = m;
       document.getElementById('modelSelect').value = state.model;
-      document.getElementById('modelBadge').textContent = state.model;
+      document.getElementById('modelBadge').textContent = state.modelLabel || state.model;
+      await loadFromServer();
       renderSidebar();
       renderChat();
       checkHealth();

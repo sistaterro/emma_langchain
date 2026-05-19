@@ -57,7 +57,13 @@ The rebuild goal is to keep endpoint behavior explicit while moving model calls 
 - `ui/chat.html`
   - Main chat client.
   - Uses the backend-provided model catalog and sends the selected model id to `/chat`.
+  - Supports real incremental streaming from `/chat` when `stream: true`; the UI creates the assistant message as the stream starts and updates it chunk by chunk.
   - Pay close attention to local state, rendering, and DOM cleanup when deleting or recreating conversations.
+
+- `ui/chat_evil_emma.html`
+  - Alternate Evil Emma chat client.
+  - Should keep its red/black visual language, but stay functionally aligned with `ui/chat.html`: auth, backend conversations, model catalog, `/chat` requests with `conversation_id`, and incremental streaming.
+  - Uses `ui/assets/evil-emma-favicon.svg` instead of the default blue Emma favicon.
 
 - `ui/upload.html`
   - RAG management screen.
@@ -175,6 +181,7 @@ Practical rule:
 - Solve responsiveness with measured, concrete changes, not complete rewrites.
 - When cards or grids are conditionally shown by role, ensure stable centering and layout even when the number of visible items changes.
 - If a screen does not apply to a role, hide it and block direct access when appropriate.
+- Visible UI version references currently use Emma 2.0.
 
 ## Execution And Verification
 
@@ -193,7 +200,7 @@ Current automated tests:
 
 - `tests/test_permissions.py` covers role restrictions for admin/file-management behavior.
 - `tests/test_rag_pipeline.py` covers chunk ingestion, file indexes, mocked inconsistency persistence, clean conflict checks, orphaned conflict pruning, and chat prompt construction with all visible chunks.
-- `tests/test_core_endpoints.py` covers auth, admin user management, conversation CRUD, file upload/list/download/delete, model catalog behavior, and LangChain missing-dependency errors.
+- `tests/test_core_endpoints.py` covers auth, admin user management, conversation CRUD, file upload/list/download/delete, model catalog behavior, LangChain missing-dependency errors, and `/chat` streaming persistence.
 
 Useful manual smoke tests after changes:
 
@@ -205,6 +212,7 @@ Useful manual smoke tests after changes:
 - `read_only` restrictions;
 - user management from admin;
 - chat creation, deletion, and recreation;
+- streaming chat responses appearing incrementally in `chat.html` and `chat_evil_emma.html`;
 - ask chat a question that requires multiple RAGs and confirm it answers from all visible chunks;
 - index and conflict consistency when a file is deleted.
 
@@ -216,7 +224,6 @@ These debt items may exist consciously and should not be "fixed" without alignin
 - `server.py` remains monolithic;
 - parts of the admin UI may still need cleanup;
 - Startup initialization uses FastAPI lifespan handlers.
-- Streaming currently wraps the full model response into JSON-line chunks after generation rather than streaming provider tokens directly.
 
 ## What To Do When Inheriting This Repo
 
@@ -225,7 +232,7 @@ Recommended order to understand it:
 1. Read `server.py` to see the active backend flow.
 2. Read `prompts.py` to understand active model behavior.
 3. Read `tests/` to understand the intended current contract.
-4. Review `ui/index.html`, `ui/chat.html`, `ui/upload.html`, and `ui/admin.html` to understand frontend expectations.
+4. Review `ui/index.html`, `ui/chat.html`, `ui/chat_evil_emma.html`, `ui/upload.html`, and `ui/admin.html` to understand frontend expectations.
 5. Confirm the real runtime schema through `init_db()` or a locally generated `emma.db`.
 6. Review `files/`, `chunks/`, and `logs/chat_audit/` to understand auxiliary persistence.
 
@@ -236,13 +243,13 @@ Current rebuild status:
 3. Conversation persistence: rebuilt.
 4. Provider/model selection: rebuilt using LangChain integrations.
 5. Upload, chunk ingestion, and inconsistency detection: rebuilt.
-6. Chat: rebuilt using all visible chunks instead of top-k retrieval.
+6. Chat: rebuilt using all visible chunks instead of top-k retrieval and real LangChain streaming for streamed requests.
 7. Tests: active and expected to pass.
 
 Likely next work:
 
 - split `server.py` into small modules once behavior stabilizes;
-- improve direct provider-token streaming if needed.
+- improve provider-token streaming behavior further only if a specific provider integration needs tuning.
 
 ## General Criterion
 
