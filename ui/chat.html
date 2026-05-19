@@ -652,6 +652,18 @@
       box-shadow: var(--shadow-sm);
     }
 
+    .msg-wrap.assistant[data-streaming="true"] .msg-bubble::after {
+      content: '';
+      display: inline-block;
+      width: 7px;
+      height: 1.1em;
+      margin-left: 3px;
+      border-radius: 3px;
+      background: var(--text4);
+      vertical-align: -0.18em;
+      animation: streamCursorBlink 0.9s ease-in-out infinite;
+    }
+
     .user .msg-bubble code {
       background: rgba(255, 255, 255, 0.2);
       border: 1px solid rgba(255, 255, 255, 0.25);
@@ -745,6 +757,18 @@
       30% {
         transform: translateY(-5px);
         background: var(--blue);
+      }
+    }
+
+    @keyframes streamCursorBlink {
+
+      0%,
+      100% {
+        opacity: 0.25;
+      }
+
+      50% {
+        opacity: 1;
       }
     }
 
@@ -1410,14 +1434,17 @@
 
     function buildMsgHtml(m) {
       const name = m.role === 'user' ? 'You' : (m.model || 'Emma');
+      const messageId = m.id ? ` data-message-id="${escAttr(m.id)}"` : '';
+      const streaming = m.streaming ? ' data-streaming="true"' : '';
       return `
-      <div class="msg-wrap ${m.role}">
-        <div class="msg-role-line"><span class="role-dot"></span>${name}</div>
+      <div class="msg-wrap ${m.role}"${messageId}${streaming}>
+        <div class="msg-role-line"><span class="role-dot"></span>${escHtml(name)}</div>
         <div class="msg-bubble">${fmtContent(m.content)}</div>
       </div>`;
     }
 
     function fmtContent(text) {
+      text = String(text || '');
       text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => `<pre><code>${escHtml(code.trim())}</code></pre>`);
       text = text.replace(/`([^`]+)`/g, (_, c) => `<code>${escHtml(c)}</code>`);
       text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
@@ -1538,7 +1565,7 @@
 
     function createAssistantStreamMsg() {
       const conv = activeConv(); if (!conv) return null;
-      const msg = { id: genId(), role: 'assistant', content: '', model: state.modelLabel || state.model };
+      const msg = { id: genId(), role: 'assistant', content: '', model: state.modelLabel || state.model, streaming: true };
       conv.messages.push(msg); renderSidebar();
       const msgs = document.getElementById('messages');
       document.getElementById('emptyState').style.display = 'none';
@@ -1550,9 +1577,19 @@
       scrollBottom(); return msg;
     }
 
-    function updateAssistantStreamMsg(msg, content) {
-      if (!msg) return; msg.content = content;
-      const bubble = document.querySelector('.msg-wrap.assistant:last-child .msg-bubble');
+    function findMessageWrap(msg) {
+      if (!msg?.id) return null;
+      return Array.from(document.querySelectorAll('.msg-wrap')).find(wrap => wrap.dataset.messageId === msg.id) || null;
+    }
+
+    function updateAssistantStreamMsg(msg, content, done = false) {
+      if (!msg) return; msg.content = content; msg.streaming = !done;
+      const wrap = findMessageWrap(msg);
+      if (wrap) {
+        if (done) delete wrap.dataset.streaming;
+        else wrap.dataset.streaming = 'true';
+      }
+      const bubble = wrap?.querySelector('.msg-bubble');
       if (bubble) bubble.innerHTML = fmtContent(content);
       scrollBottom();
     }
@@ -1630,7 +1667,9 @@
         return data?.message?.content ?? data?.choices?.[0]?.message?.content ?? JSON.stringify(data);
       }
       const reader = res.body?.getReader(); if (!reader) throw new Error('Streaming not supported');
-      const decoder = new TextDecoder(); let buffer = '', reply = '', assistantMsg = null;
+      typing?.remove();
+      const assistantMsg = createAssistantStreamMsg();
+      const decoder = new TextDecoder(); let buffer = '', reply = '';
       while (true) {
         const { value, done } = await reader.read(); if (done) break;
         buffer += decoder.decode(value, { stream: true });
@@ -1643,10 +1682,12 @@
           for (const chunk of objects) {
             const piece = chunk?.text || '';
             if (piece) {
-              if (!assistantMsg) { typing?.remove(); assistantMsg = createAssistantStreamMsg(); }
               reply += piece; updateAssistantStreamMsg(assistantMsg, reply);
             }
-            if (chunk?.done) return reply;
+            if (chunk?.done) {
+              updateAssistantStreamMsg(assistantMsg, reply, true);
+              return reply;
+            }
           }
         }
       }
@@ -1656,14 +1697,15 @@
         for (const chunk of objects) {
           const piece = chunk?.text || '';
           if (piece) {
-            if (!assistantMsg) { typing?.remove(); assistantMsg = createAssistantStreamMsg(); }
             reply += piece; updateAssistantStreamMsg(assistantMsg, reply);
           }
-          if (chunk?.done) return reply;
+          if (chunk?.done) {
+            updateAssistantStreamMsg(assistantMsg, reply, true);
+            return reply;
+          }
         }
       }
-      if (!assistantMsg) { typing?.remove(); assistantMsg = createAssistantStreamMsg(); }
-      updateAssistantStreamMsg(assistantMsg, reply); return reply;
+      updateAssistantStreamMsg(assistantMsg, reply, true); return reply;
     }
 
     async function mockReply(messages) {
@@ -1727,7 +1769,8 @@
       }
     }
 
-    function escHtml(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+    function escHtml(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+    function escAttr(s) { return escHtml(s).replace(/"/g, '&quot;'); }
 
     const HOLO_PHRASES = [
       "AI MODELS NOW HANDLE TEXT IMAGE AUDIO AND VIDEO",

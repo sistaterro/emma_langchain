@@ -286,6 +286,78 @@ class CoreEndpointTests(unittest.TestCase):
         finally:
             self.server.resolve_model = original_resolve
             self.server.generate_ai_reply = original_generate
+
+    def test_chat_stream_uses_model_stream_and_persists_final_reply(self):
+        def fake_resolve_model(selection):
+            return {"id": selection, "provider": "fake", "model": selection}
+
+        async def fake_generate_ai_reply(_model, messages):
+            if "Return ONLY valid JSON" in messages[-1].content:
+                return json.dumps(
+                    {
+                        "label": "SAFE",
+                        "confidence": 0.05,
+                        "summary": "Ordinary question.",
+                        "signals": [],
+                        "evidence": [],
+                    }
+                )
+            return "non-stream fallback"
+
+        async def fake_generate_ai_reply_stream(_model, _messages):
+            yield "[RAG]\nHello"
+            yield " from"
+            yield " streaming."
+
+        original_resolve = self.server.resolve_model
+        original_generate = self.server.generate_ai_reply
+        original_stream = self.server.generate_ai_reply_stream
+        self.server.resolve_model = fake_resolve_model
+        self.server.generate_ai_reply = fake_generate_ai_reply
+        self.server.generate_ai_reply_stream = fake_generate_ai_reply_stream
+        try:
+            token = self.login()
+            conv_response = self.client.post(
+                "/conversations",
+                headers=self.auth_headers(token),
+                json={"title": "Streaming test", "model": "fake:test"},
+            )
+            self.assertEqual(conv_response.status_code, 200, conv_response.text)
+            conversation_id = conv_response.json()["id"]
+
+            with self.client.stream(
+                "POST",
+                "/chat",
+                headers=self.auth_headers(token),
+                json={
+                    "model": "fake:test",
+                    "stream": True,
+                    "conversation_id": conversation_id,
+                    "messages": [{"role": "user", "content": "Stream this answer"}],
+                },
+            ) as response:
+                self.assertEqual(response.status_code, 200)
+                chunks = [json.loads(line) for line in response.iter_lines() if line]
+
+            self.assertEqual(
+                [chunk["text"] for chunk in chunks],
+                ["[RAG]\nHello", " from", " streaming.", ""],
+            )
+            self.assertTrue(chunks[-1]["done"])
+
+            conversation_response = self.client.get(
+                f"/conversations/{conversation_id}",
+                headers=self.auth_headers(token),
+            )
+            self.assertEqual(conversation_response.status_code, 200, conversation_response.text)
+            stored = conversation_response.json()["messages"]
+            self.assertEqual(stored[-1]["role"], "assistant")
+            self.assertEqual(stored[-1]["content"], "[RAG]\nHello from streaming.")
+        finally:
+            self.server.resolve_model = original_resolve
+            self.server.generate_ai_reply = original_generate
+            self.server.generate_ai_reply_stream = original_stream
+
     def test_langchain_missing_dependency_returns_clear_error(self):
         original_import = self.server.__builtins__["__import__"]
 

@@ -4,7 +4,6 @@ import os
 import re
 import secrets
 import sqlite3
-import textwrap
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -999,10 +998,10 @@ def make_langchain_chat_model(model: dict):
     raise HTTPException(status_code=400, detail="Unsupported provider")
 
 
-def langchain_response_text(response) -> str:
+def langchain_response_text(response, *, strip: bool = True) -> str:
     content = getattr(response, "content", response)
     if isinstance(content, str):
-        return content.strip()
+        return content.strip() if strip else content
     if isinstance(content, list):
         parts = []
         for item in content:
@@ -1010,14 +1009,24 @@ def langchain_response_text(response) -> str:
                 parts.append(item)
             elif isinstance(item, dict):
                 parts.append(str(item.get("text") or item.get("content") or ""))
-        return "".join(parts).strip()
-    return str(content).strip()
+        text = "".join(parts)
+        return text.strip() if strip else text
+    text = str(content)
+    return text.strip() if strip else text
 
 
 async def generate_ai_reply(model: dict, messages: list[Message]) -> str:
     chat_model = make_langchain_chat_model(model)
     response = await chat_model.ainvoke(to_langchain_messages(messages))
     return langchain_response_text(response)
+
+
+async def generate_ai_reply_stream(model: dict, messages: list[Message]):
+    chat_model = make_langchain_chat_model(model)
+    async for chunk in chat_model.astream(to_langchain_messages(messages)):
+        piece = langchain_response_text(chunk, strip=False)
+        if piece:
+            yield piece
 
 
 
@@ -1166,9 +1175,25 @@ def response_tag(text: str) -> str | None:
     return None
 
 
-async def stream_text_as_json_lines(text: str):
-    for piece in textwrap.wrap(text, width=80, replace_whitespace=False, drop_whitespace=False):
+async def stream_chat_as_json_lines(
+    model: dict,
+    messages: list[Message],
+    req: ChatRequest,
+    user: dict,
+    audit_record: dict,
+):
+    reply_parts = []
+    async for piece in generate_ai_reply_stream(model, messages):
+        reply_parts.append(piece)
         yield json.dumps({"text": piece, "done": False}) + "\n"
+
+    reply = "".join(reply_parts)
+    store_chat_messages(req.conversation_id, user["id"], req.messages, reply)
+    audit_record["response"] = {
+        "tag": response_tag(reply),
+        "length": len(reply),
+    }
+    persist_suspicious_chat_audit_log(audit_record)
     yield json.dumps({"text": "", "done": True}) + "\n"
 
 
@@ -1769,18 +1794,23 @@ async def chat(
     context_chunks = load_visible_context_chunks(user)
     safety = await analyze_user_message_safety(question, model)
     ai_messages = build_chat_messages_with_all_visible_chunks(req, user, context_chunks)
+    audit_record = build_chat_audit_record(req, user, model, question, safety, context_chunks)
+
+    if req.stream:
+        return StreamingResponse(
+            stream_chat_as_json_lines(model, ai_messages, req, user, audit_record),
+            media_type="application/x-ndjson",
+        )
+
     reply = await generate_ai_reply(model, ai_messages)
     store_chat_messages(req.conversation_id, user["id"], req.messages, reply)
 
-    audit_record = build_chat_audit_record(req, user, model, question, safety, context_chunks)
     audit_record["response"] = {
         "tag": response_tag(reply),
         "length": len(reply),
     }
     persist_suspicious_chat_audit_log(audit_record)
 
-    if req.stream:
-        return StreamingResponse(stream_text_as_json_lines(reply), media_type="application/x-ndjson")
     return {
         "model": model["id"],
         "tag": response_tag(reply),
