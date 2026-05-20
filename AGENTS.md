@@ -139,7 +139,7 @@ Recommended convention:
 
 Avoid prompt classes without real state.
 
-Current RAG strategy deliberately does not route to "probable" files or select top-k chunks. Chat loads all visible chunks and lets the selected model reason over the full visible context.
+Current RAG strategy deliberately does not route to "probable" files or select top-k chunks. Chat loads all visible safe chunks and lets the selected model reason over that full visible context. RAGs marked with `security.risk == "high"` are excluded from chat context.
 
 ### 4. Protect Visual State
 
@@ -173,6 +173,7 @@ Practical rule:
 - Inconsistency detection is asynchronous and persisted in `conflicts_index.json`.
 - RAG prompt-injection detection is local/heuristic, runs during ingestion, and persists results in `security_index.json` next to the RAG files.
 - RAG security levels are `none`, `medium`, and `high`; treat `high` as dangerous for the system and `medium` as requiring review.
+- Chat must not use RAG chunks whose prompt-injection security result is `high`. `visible_chat_chunk_sources(...)` is responsible for filtering them out, and it creates a missing security assessment lazily before a RAG can be used.
 - `/files` is responsible for surfacing persisted conflict state and scheduling missing checks for indexed RAGs that have no conflict record yet.
 - `/files` also surfaces persisted `security` state for prompt-injection findings.
 - When deleting RAGs, prune both direct `conflicts_index.json` entries and orphaned `matches` that reference deleted files.
@@ -209,7 +210,7 @@ Recommended workflow:
 Current automated tests:
 
 - `tests/test_permissions.py` covers role restrictions for admin/file-management behavior.
-- `tests/test_rag_pipeline.py` covers chunk ingestion, file indexes, mocked inconsistency persistence, clean conflict checks, orphaned conflict pruning, and chat prompt construction with all visible chunks.
+- `tests/test_rag_pipeline.py` covers chunk ingestion, file indexes, mocked inconsistency persistence, clean conflict checks, orphaned conflict pruning, chat prompt construction with visible safe chunks, and exclusion of high-risk RAGs from chat context.
 - `tests/test_core_endpoints.py` covers auth, admin user management, conversation CRUD, file upload/list/download/delete, model catalog behavior, LangChain missing-dependency errors, and `/chat` streaming persistence.
 
 Useful manual smoke tests after changes:
@@ -219,13 +220,14 @@ Useful manual smoke tests after changes:
 - upload and delete of user-owned RAGs;
 - upload two contradictory RAGs and confirm `upload.html` shows conflicts after polling;
 - upload a RAG containing prompt-injection text and confirm `upload.html` shows `PROMPT INJECTION HIGH`, `files/<user_id>/security_index.json` is updated, and `logs/rag_audit/` receives a JSON record;
+- confirm high-risk RAG cards warn that they will not be used by the system, and verify chat answers do not include those RAG chunks in the prompt context;
 - delete one side of a conflict and confirm the remaining file no longer shows stale conflict details;
 - trigger or simulate an unhandled backend exception and confirm `logs/exception_log/` receives a detailed JSON record;
 - `read_only` restrictions;
 - user management from admin;
 - chat creation, deletion, and recreation;
 - streaming chat responses appearing incrementally in `chat.html` and `chat_evil_emma.html`;
-- ask chat a question that requires multiple RAGs and confirm it answers from all visible chunks;
+- ask chat a question that requires multiple safe RAGs and confirm it answers from all visible safe chunks;
 - index and conflict consistency when a file is deleted.
 
 ## Known Technical Debt
@@ -255,7 +257,7 @@ Current rebuild status:
 3. Conversation persistence: rebuilt.
 4. Provider/model selection: rebuilt using LangChain integrations.
 5. Upload, chunk ingestion, inconsistency detection, and RAG prompt-injection detection/auditing: rebuilt.
-6. Chat: rebuilt using all visible chunks instead of top-k retrieval and real LangChain streaming for streamed requests.
+6. Chat: rebuilt using all visible safe chunks instead of top-k retrieval, excludes high-risk RAGs from context, and supports real LangChain streaming for streamed requests.
 7. Tests: active and expected to pass.
 
 Likely next work:

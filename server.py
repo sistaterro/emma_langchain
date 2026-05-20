@@ -486,6 +486,45 @@ def security_response(record: dict | None, status: str = "unchecked") -> dict:
     return response
 
 
+def get_or_create_rag_security_record(
+    txt_path: Path,
+    scope: str,
+    owner_id: int | None,
+) -> dict:
+    files_dir = txt_path.parent
+    security = prune_index_entries(files_dir, "security_index.json")
+    existing = security.get(txt_path.stem)
+    if isinstance(existing, dict):
+        return existing
+    if not txt_path.exists():
+        return {}
+    try:
+        assessment = assess_rag_prompt_injection(txt_path.read_text(encoding="utf-8", errors="ignore"))
+        save_security_to_index(files_dir, txt_path.stem, assessment)
+        persist_suspicious_rag_audit_log(txt_path, scope, owner_id, assessment)
+        return assessment
+    except Exception as exc:
+        persist_exception_log(
+            exc,
+            {
+                "operation": "rag_security_assessment_for_chat",
+                "path": str(txt_path),
+                "scope": scope,
+                "owner_id": owner_id,
+            },
+        )
+        return {}
+
+
+def is_high_risk_rag_security(record: dict | None) -> bool:
+    security = security_response(record)
+    return bool(security.get("has_any")) and security.get("risk") == "high"
+
+
+def should_exclude_rag_from_chat(txt_path: Path, scope: str, owner_id: int | None) -> bool:
+    return is_high_risk_rag_security(get_or_create_rag_security_record(txt_path, scope, owner_id))
+
+
 def rotate_rag_audit_logs(max_files: int = 500, delete_count: int = 50) -> None:
     try:
         files = sorted(RAG_AUDIT_DIR.glob("*.json"), key=lambda path: path.stat().st_mtime)
@@ -873,6 +912,8 @@ def visible_rag_candidates(user: dict, current_scope: str, current_stem: str) ->
 def visible_chat_chunk_sources(user: dict) -> list[dict]:
     sources = []
     for txt_path in sorted(GLOBAL_FILES_DIR.glob("*.txt")):
+        if should_exclude_rag_from_chat(txt_path, "global", None):
+            continue
         sources.append(
             {
                 "key": f"global/{txt_path.stem}",
@@ -884,6 +925,8 @@ def visible_chat_chunk_sources(user: dict) -> list[dict]:
 
     own_chunks_dir = user_chunks_dir(user["id"])
     for txt_path in sorted(user_files_dir(user["id"]).glob("*.txt")):
+        if should_exclude_rag_from_chat(txt_path, "user", user["id"]):
+            continue
         sources.append(
             {
                 "key": f"mine/{txt_path.stem}",

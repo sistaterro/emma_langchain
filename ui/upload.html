@@ -1134,6 +1134,15 @@
       return String(risk || 'medium').toUpperCase();
     }
 
+    function renderHighRiskExclusionNotice(security) {
+      if (!security || !security.has_any || security.risk !== 'high') return '';
+      return `
+        <div class="alert-summary" style="margin-top:8px;color:var(--red);border-color:rgba(255,59,48,.22);background:rgba(255,59,48,.06)">
+          This RAG will not be used by the system because it is considered manipulative and malicious.
+        </div>
+      `;
+    }
+
     function renderSecurityDetails(security) {
       if (!security || !security.has_any) return '';
       return `
@@ -1319,6 +1328,7 @@
               ${checkingConflicts ? `<span class="alert-tag sev-low" style="margin-left:8px">CHECKING CONFLICTS</span>` : ''}
             </div>
             ${hasConflicts ? `<div class="alert-summary" style="margin-top:6px">${escHtml((f.inconsistencies.matches || [])[0]?.summary || 'Possible factual conflicts detected')}</div>` : ''}
+            ${hasSecurityRisk ? renderHighRiskExclusionNotice(f.security) : ''}
             ${hasConflicts ? renderConflictDetails(f.inconsistencies) : ''}
             ${hasSecurityRisk ? renderSecurityDetails(f.security) : ''}
             ${f.indexed ? `<div class="progress-wrap"><div class="progress-bar" style="width:100%"></div></div>` : ''}
