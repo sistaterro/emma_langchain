@@ -1,8 +1,8 @@
-# Emma - Local-First AI With RAG
+# Emma 2.0 - Local-First AI With Safer RAG
 
-Emma is a FastAPI chat application with local RAG storage, user roles, document ingestion, inconsistency detection, and a model selector backed by LangChain.
+Emma is a FastAPI chat application with local RAG storage, user roles, document ingestion, inconsistency detection, prompt-injection screening, audit logs, conversation persistence, and LangChain-backed model generation.
 
-The app keeps documents, chunks, users, conversations, and local state on your machine. Model calls use the API providers you configure, such as Gemini, OpenAI, or Anthropic.
+The app keeps documents, chunks, users, conversations, and runtime state on your machine. Model calls go through the providers you configure, such as Gemini, OpenAI, or Anthropic.
 
 ![Home](assets/home.png)
 
@@ -14,20 +14,25 @@ The app keeps documents, chunks, users, conversations, and local state on your m
 
 ---
 
-## What Is This?
+## What Emma Does
 
-Emma lets users upload `.txt` documents, split them into local RAG chunks, detect likely contradictions between visible RAGs, and ask grounded questions through the selected AI model.
+Emma lets authenticated users upload `.txt` documents, split them into local JSON RAG chunks, detect likely contradictions between visible RAGs, and ask grounded questions through a selected LangChain chat model.
 
 Current backend capabilities:
 
 - FastAPI backend with SQLite persistence.
 - Role-based access control with `admin`, `user`, and `read_only`.
-- Local document storage in `files/`.
-- Local JSON chunk storage in `chunks/`.
-- LangChain chat model integration for Gemini, OpenAI, and Anthropic.
-- UI model selector based on the API keys available to the backend.
-- Upload-time inconsistency detection using the selected provider pipeline.
-- Conversational RAG that sends all visible chunks to the selected model instead of using a fixed top-k limit.
+- Local source documents in `files/`.
+- Local JSON chunks in `chunks/`.
+- Conversation persistence and streaming chat responses.
+- LangChain chat model integrations for Gemini, OpenAI, and Anthropic.
+- Backend-provided model catalog based on configured provider keys.
+- Upload-time inconsistency detection persisted in `conflicts_index.json`.
+- Prompt-injection screening for RAG uploads persisted in `security_index.json`.
+- Suspicious RAG audit logs in `logs/rag_audit/`.
+- Suspicious chat manipulation audit logs in `logs/chat_audit/`.
+- Detailed exception logs in `logs/exception_log/`.
+- Chat context built from all visible safe chunks, not a fixed top-k retrieval limit.
 
 Current role model:
 
@@ -37,9 +42,31 @@ Current role model:
 
 Every response is expected to tag its grounding:
 
-- `[RAG]` - answer is based on the uploaded documents.
+- `[RAG]` - answer is based on uploaded documents.
 - `[DRIFT]` - answer includes model knowledge beyond the documents.
 - `[NO INFO]` - the documents do not contain enough information.
+
+---
+
+## RAG Safety Model
+
+Uploaded RAGs are treated as untrusted content. Emma screens document text for prompt-injection patterns such as instruction overrides, requests to reveal prompts or secrets, safety bypass attempts, and tool execution requests.
+
+RAG security levels:
+
+- `none`: no prompt-injection signals found.
+- `medium`: suspicious content requiring review.
+- `high`: dangerous content that must not be used as chat context.
+
+High-risk RAG behavior:
+
+- The upload UI shows a red warning on the file card.
+- The RAG remains visible for review and deletion.
+- The backend excludes its chunks from `/chat` context.
+- If an older RAG has no `security_index.json` entry yet, chat lazily creates the security assessment before deciding whether to use it.
+- Suspicious RAG records are written to `logs/rag_audit/`.
+
+RAG context that is sent to the model is wrapped with `BEGIN_UNTRUSTED_CONTEXT` and `END_UNTRUSTED_CONTEXT` so provider models are explicitly instructed to treat retrieved content as reference data, not executable instructions.
 
 ---
 
@@ -62,7 +89,7 @@ Ollama is not required for the current rebuilt path.
 
 ```bash
 git clone https://github.com/sistaterro/emma_langchain.git
-cd emma-rag
+cd emma_langchain
 ```
 
 ### 2. Create A Virtual Environment
@@ -104,17 +131,7 @@ Example with fake keys:
 }
 ```
 
-Only include the providers you actually want to use. For example, if you only use Gemini, this is enough:
-
-```json
-{
-  "gemini": {
-    "api_key": "replace-with-your-gemini-api-key"
-  }
-}
-```
-
-The backend uses `api_keys.json` to decide which providers and models are available in the UI selector. It does not expose the actual API key values to the frontend.
+Only include the providers you actually want to use. The backend uses `api_keys.json` to decide which providers and models are available in the UI selector. It never exposes key values to the frontend.
 
 Environment variables are also supported:
 
@@ -155,41 +172,35 @@ password: admin1234
 
 ---
 
-## Project Structure
-
-```text
-emma-rag/
-|-- server.py           # Active FastAPI backend
-|-- prompts.py          # Canonical prompt builders
-|-- requirements.txt    # Python dependencies
-|-- run.bat             # Windows launcher
-|-- test.bat            # Test sequencer
-|-- api_keys.json       # Local API credentials, ignored by Git
-|-- emma.db             # Local SQLite runtime database, ignored by Git
-|-- files/              # Uploaded user/global .txt documents
-|-- chunks/             # Auto-generated JSON chunks and conflict indexes
-|-- tests/              # Unit tests
-`-- ui/
-    |-- index.html      # Home
-    |-- login.html      # Authentication
-    |-- chat.html       # Chat UI
-    |-- admin.html      # Admin panel
-    |-- Docs.html       # Built-in project documentation
-    `-- upload.html     # RAG manager
-```
-
-Do not commit real API keys. emma.db is local runtime state and is ignored by Git.
-
----
-
-## Core Routes
+## Main Screens
 
 - `http://localhost:8000/ui/login.html` - login screen
 - `http://localhost:8000/ui/index.html` - main home
-- `http://localhost:8000/ui/chat.html` - chat UI
-- `http://localhost:8000/ui/upload.html` - RAG management
+- `http://localhost:8000/ui/chat.html` - main Emma chat UI
+- `http://localhost:8000/ui/chat_evil_emma.html` - Evil Emma chat UI with matching backend behavior
+- `http://localhost:8000/ui/upload.html` - RAG management and security status
 - `http://localhost:8000/ui/admin.html` - admin panel
 - `http://localhost:8000/ui/Docs.html` - built-in documentation
+
+---
+
+## How RAG Works Now
+
+```text
+User question
+      v
+Backend loads visible safe chunks for the user
+      v
+High-risk RAGs are excluded from context
+      v
+Backend builds the RAG prompt from prompts.py
+      v
+Selected LangChain chat model streams or returns the answer
+      v
+Response is tagged with [RAG] / [DRIFT] / [NO INFO]
+```
+
+This rebuilt flow intentionally does not use embeddings, `.npy` files, router prompts, or a fixed top-k chunk limit. The model receives the visible safe chunk set and decides which parts are useful for the answer.
 
 ---
 
@@ -198,10 +209,11 @@ Do not commit real API keys. emma.db is local runtime state and is ignored by Gi
 1. Open `http://localhost:8000/ui/upload.html`.
 2. Drag and drop a `.txt` file.
 3. The server chunks the document and stores local JSON chunk files.
-4. The server checks the new document for likely inconsistencies against visible RAGs.
-5. The document becomes available to chat without restarting the server.
+4. The server checks the new document for likely prompt injection.
+5. The server checks for likely inconsistencies against visible RAGs.
+6. The document becomes available to chat if it is not marked `high` risk.
 
-If Emma detects likely contradictions, the upload page shows the persisted inconsistency details and marks the file with a conflict state.
+If Emma detects likely contradictions, the upload page shows persisted inconsistency details. If Emma detects prompt-injection risk, the upload page shows the security level. High-risk RAGs stay indexed for review, but they are not used by chat.
 
 Permissions:
 
@@ -211,21 +223,36 @@ Permissions:
 
 ---
 
-## How RAG Works Now
+## Project Structure
 
 ```text
-User question
-      v
-Backend loads all chunks visible to the user
-      v
-Backend builds the RAG prompt from prompts.py
-      v
-Selected LangChain chat model generates the answer
-      v
-Response is tagged with [RAG] / [DRIFT] / [NO INFO]
+emma_langchain/
+|-- server.py              # Active FastAPI backend
+|-- prompts.py             # Canonical prompt builders
+|-- requirements.txt       # Python dependencies
+|-- run.bat                # Windows launcher
+|-- test.bat               # Test sequencer
+|-- api_keys.json          # Local API credentials, ignored by Git
+|-- emma.db                # Local SQLite runtime database, ignored by Git
+|-- files/                 # Uploaded user/global .txt documents and JSON indexes
+|-- chunks/                # Auto-generated JSON chunks
+|-- logs/
+|   |-- chat_audit/        # Suspicious chat manipulation audit logs
+|   |-- rag_audit/         # Suspicious RAG audit logs
+|   `-- exception_log/     # Detailed exception logs
+|-- tests/                 # Unit tests
+`-- ui/
+    |-- index.html
+    |-- login.html
+    |-- chat.html
+    |-- chat_evil_emma.html
+    |-- upload.html
+    |-- admin.html
+    |-- Docs.html
+    `-- assets/
 ```
 
-This rebuilt flow intentionally does not use a fixed "top 3 chunks" limit. The model receives the visible chunk set and decides which parts are useful for the answer.
+Do not commit real API keys. `emma.db`, runtime logs, uploaded files, and generated chunks are local runtime state.
 
 ---
 
@@ -240,12 +267,14 @@ Local:
 - Users
 - Conversations
 - SQLite database
+- Audit logs
+- Exception logs
 
 Sent to the configured provider API:
 
 - The user question
 - Conversation context needed for the request
-- RAG chunk content included in the prompt
+- Visible safe RAG chunk content included in the prompt
 
 Use providers and keys appropriate for the sensitivity of your documents.
 
@@ -265,20 +294,21 @@ Or run unit tests directly:
 python -m unittest discover tests
 ```
 
-The tests mock provider calls and focus on backend behavior, permissions, RAG ingestion, conflict persistence, and conversation functionality.
+The tests mock provider calls and focus on backend behavior, permissions, RAG ingestion, conflict persistence, RAG safety filtering, streaming, and conversation functionality.
 
 ---
 
 ## Current Technical Notes
 
-- `server.py` is still the active backend boundary and remains fairly compact for now.
+- `server.py` is still the active backend boundary and remains monolithic.
 - `prompts.py` is the canonical place for active prompt builders.
 - Startup initialization uses FastAPI lifespan handlers.
-- `emma.db` is generated locally on first run and ignored by Git.
+- RAG ingestion writes JSON chunks only.
+- Chat streaming is supported by both `ui/chat.html` and `ui/chat_evil_emma.html`.
+- Audit log folders rotate at 500 files.
 
 ---
 
 ## License
 
 MIT - free to use, modify, and distribute.
-

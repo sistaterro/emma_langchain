@@ -10,6 +10,8 @@ When the request is to "update documentation", the expected scope in this projec
 - `ui/Docs.html`
 - `AGENTS.md`
 
+Keep these three documents aligned with the active Emma 2.0 behavior: LangChain-backed providers, JSON-only RAG chunks, streaming chat, RAG prompt-injection screening, audit logs, exception logs, and exclusion of high-risk RAGs from chat context.
+
 ## Project Summary
 
 This branch is a rebuild branch for a LangChain-centered backend.
