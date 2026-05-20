@@ -52,6 +52,7 @@ class RagPipelineTests(unittest.TestCase):
         self.server.GLOBAL_CHUNKS_DIR = self.server.CHUNKS_ROOT / "global"
         self.server.LOGS_DIR = self.root / "logs" / "chat_audit"
         self.server.RAG_AUDIT_DIR = self.root / "logs" / "rag_audit"
+        self.server.EXCEPTION_LOG_DIR = self.root / "logs" / "exception_log"
         self.server.init_db()
         self.client = TestClient(self.server.app)
 
@@ -142,6 +143,23 @@ class RagPipelineTests(unittest.TestCase):
         self.assertEqual(audit["file"]["owner_id"], 1)
         self.assertTrue(audit["security"]["has_any"])
         self.assertEqual(audit["security"]["risk"], "high")
+
+    def test_files_endpoint_exposes_prompt_injection_security_status(self):
+        files_dir = self.server.user_files_dir(1)
+        chunks_dir = self.server.user_chunks_dir(1)
+        txt_path = files_dir / "injection.txt"
+        txt_path.write_text(LONG_PROMPT_INJECTION_TEXT, encoding="utf-8")
+        asyncio.run(self.server.process_rag_file(txt_path, chunks_dir, "user", 1))
+
+        token = self.login()
+        response = self.client.get("/files", headers=self.auth_headers(token))
+
+        self.assertEqual(response.status_code, 200, response.text)
+        injection = next(file for file in response.json()["files"] if file["name"] == "injection.txt")
+        self.assertTrue(injection["security"]["has_any"])
+        self.assertEqual(injection["security"]["risk"], "high")
+        signals = {match["signal"] for match in injection["security"]["matches"]}
+        self.assertIn("ignore_previous_instructions", signals)
 
     def test_process_rag_file_does_not_write_audit_log_for_clean_rag(self):
         files_dir = self.server.user_files_dir(1)

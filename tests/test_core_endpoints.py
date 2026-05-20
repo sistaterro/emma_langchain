@@ -22,6 +22,7 @@ class CoreEndpointTests(unittest.TestCase):
         self.server.GLOBAL_CHUNKS_DIR = self.server.CHUNKS_ROOT / "global"
         self.server.LOGS_DIR = self.root / "logs" / "chat_audit"
         self.server.RAG_AUDIT_DIR = self.root / "logs" / "rag_audit"
+        self.server.EXCEPTION_LOG_DIR = self.root / "logs" / "exception_log"
         self.server.API_KEYS_PATH = self.root / "api_keys.json"
         self.server.init_db()
         self.client = TestClient(self.server.app)
@@ -334,6 +335,48 @@ class CoreEndpointTests(unittest.TestCase):
         extra.write_text("{}", encoding="utf-8")
         self.server.rotate_chat_audit_logs()
         self.assertEqual(len(list(self.server.LOGS_DIR.glob("*.json"))), 450)
+
+    def test_exception_log_persists_detailed_record_and_rotates_at_500(self):
+        try:
+            raise RuntimeError("boom detail")
+        except RuntimeError as exc:
+            self.server.persist_exception_log(exc, {"source": "unit_test", "path": "/boom"})
+
+        logs = list(self.server.EXCEPTION_LOG_DIR.glob("exception_*.json"))
+        self.assertEqual(len(logs), 1)
+        record = json.loads(logs[0].read_text(encoding="utf-8"))
+        self.assertEqual(record["audit_type"], "exception")
+        self.assertEqual(record["exception"]["type"], "RuntimeError")
+        self.assertEqual(record["exception"]["message"], "boom detail")
+        self.assertIn("RuntimeError: boom detail", record["exception"]["traceback"])
+        self.assertEqual(record["context"]["source"], "unit_test")
+        self.assertEqual(record["context"]["path"], "/boom")
+        self.assertIn("pid", record["runtime"])
+
+        for index in range(498):
+            path = self.server.EXCEPTION_LOG_DIR / f"exception_extra_{index:04d}.json"
+            path.write_text("{}", encoding="utf-8")
+        self.server.rotate_exception_logs()
+        self.assertEqual(len(list(self.server.EXCEPTION_LOG_DIR.glob("*.json"))), 499)
+
+        extra = self.server.EXCEPTION_LOG_DIR / "exception_extra_0498.json"
+        extra.write_text("{}", encoding="utf-8")
+        self.server.rotate_exception_logs()
+        self.assertEqual(len(list(self.server.EXCEPTION_LOG_DIR.glob("*.json"))), 450)
+
+    def test_rag_audit_rotation_keeps_up_to_500_files(self):
+        self.server.RAG_AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+        for index in range(499):
+            path = self.server.RAG_AUDIT_DIR / f"suspicious_rag_{index:04d}.json"
+            path.write_text("{}", encoding="utf-8")
+
+        self.server.rotate_rag_audit_logs()
+        self.assertEqual(len(list(self.server.RAG_AUDIT_DIR.glob("*.json"))), 499)
+
+        extra = self.server.RAG_AUDIT_DIR / "suspicious_rag_0499.json"
+        extra.write_text("{}", encoding="utf-8")
+        self.server.rotate_rag_audit_logs()
+        self.assertEqual(len(list(self.server.RAG_AUDIT_DIR.glob("*.json"))), 450)
 
     def test_chat_stream_uses_model_stream_and_persists_final_reply(self):
         def fake_resolve_model(selection):

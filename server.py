@@ -4,6 +4,7 @@ import os
 import re
 import secrets
 import sqlite3
+import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +36,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def log_unhandled_http_exceptions(request, call_next):
+    try:
+        response = await call_next(request)
+        if request.url.path.startswith("/ui/") and request.url.path.endswith(".html"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+    except Exception as exc:
+        persist_exception_log(
+            exc,
+            {
+                "source": "http",
+                "method": request.method,
+                "url": str(request.url),
+                "path": request.url.path,
+                "query": str(request.url.query),
+                "client": request.client.host if request.client else None,
+            },
+        )
+        raise
+
+
 app.mount("/ui", StaticFiles(directory="ui"), name="ui")
 
 security = HTTPBearer(auto_error=False)
@@ -43,6 +67,7 @@ FAVICON_PATH = Path("assets/emma-favicon.svg")
 DB_PATH = Path("emma.db")
 LOGS_DIR = Path("logs/chat_audit")
 RAG_AUDIT_DIR = Path("logs/rag_audit")
+EXCEPTION_LOG_DIR = Path("logs/exception_log")
 VALID_ROLES = {"admin", "user", "read_only"}
 
 FILES_ROOT = Path("files")
@@ -512,6 +537,49 @@ def persist_suspicious_rag_audit_log(
         print(f"[rag-audit] failed to persist audit log: {exc}")
 
 
+def rotate_exception_logs(max_files: int = 500, delete_count: int = 50) -> None:
+    try:
+        files = sorted(EXCEPTION_LOG_DIR.glob("*.json"), key=lambda path: path.stat().st_mtime)
+        if len(files) < max_files:
+            return
+        for path in files[:delete_count]:
+            path.unlink(missing_ok=True)
+    except Exception as exc:
+        print(f"[exception-log] failed to rotate logs: {exc}")
+
+
+def build_exception_log_record(exc: BaseException, context: dict | None = None) -> dict:
+    return {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "audit_type": "exception",
+        "exception": {
+            "type": type(exc).__name__,
+            "module": type(exc).__module__,
+            "message": str(exc),
+            "repr": repr(exc),
+            "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+        },
+        "context": context or {},
+        "runtime": {
+            "cwd": str(Path.cwd()),
+            "pid": os.getpid(),
+        },
+    }
+
+
+def persist_exception_log(exc: BaseException, context: dict | None = None) -> None:
+    try:
+        EXCEPTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        rotate_exception_logs()
+        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S%fZ")
+        safe_type = re.sub(r"[^\w.-]+", "_", type(exc).__name__).strip("_") or "exception"
+        path = EXCEPTION_LOG_DIR / f"exception_{ts}_{safe_type}_{secrets.token_hex(4)}.json"
+        record = build_exception_log_record(exc, context)
+        path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as log_exc:
+        print(f"[exception-log] failed to persist exception log: {log_exc}")
+
+
 def load_conflicts_index(base_dir: Path) -> dict:
     return prune_index_entries(base_dir, "conflicts_index.json")
 
@@ -946,6 +1014,17 @@ def schedule_existing_conflict_check(
     async def runner():
         try:
             await check_existing_rag_conflicts(txt_path, chunks_dir, scope, owner_id, user)
+        except Exception as exc:
+            persist_exception_log(
+                exc,
+                {
+                    "source": "background_conflict_check",
+                    "file": str(txt_path),
+                    "scope": scope,
+                    "owner_id": owner_id,
+                    "user_id": user.get("id") if isinstance(user, dict) else None,
+                },
+            )
         finally:
             CONFLICT_CHECK_TASKS.discard(key)
 
@@ -1016,6 +1095,31 @@ async def process_rag_file(
         )
         if txt_path.exists():
             save_conflicts_to_index(txt_path.parent, txt_path.stem, conflicts)
+
+
+def schedule_rag_processing(
+    txt_path: Path,
+    chunks_dir: Path,
+    scope: str,
+    owner_id: int | None,
+    user: dict,
+) -> None:
+    async def runner():
+        try:
+            await process_rag_file(txt_path, chunks_dir, scope, owner_id, user)
+        except Exception as exc:
+            persist_exception_log(
+                exc,
+                {
+                    "source": "background_rag_processing",
+                    "file": str(txt_path),
+                    "scope": scope,
+                    "owner_id": owner_id,
+                    "user_id": user.get("id") if isinstance(user, dict) else None,
+                },
+            )
+
+    asyncio.create_task(runner())
 
 
 def read_key_file(path: Path, *names: str) -> str | None:
@@ -1448,6 +1552,7 @@ def initialize_runtime():
     init_db()
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     RAG_AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+    EXCEPTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
     GLOBAL_FILES_DIR.mkdir(parents=True, exist_ok=True)
     GLOBAL_CHUNKS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1737,7 +1842,7 @@ async def upload_file(
     uploaded_text = file_bytes.decode("utf-8", errors="ignore")
     security = assess_rag_prompt_injection(uploaded_text)
     indexing_user = dict(user)
-    asyncio.create_task(process_rag_file(dest, chunks_dir, scope, target_user_id, indexing_user))
+    schedule_rag_processing(dest, chunks_dir, scope, target_user_id, indexing_user)
     return {
         "status": "ok",
         "file": file.filename,
