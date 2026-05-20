@@ -42,6 +42,7 @@ security = HTTPBearer(auto_error=False)
 FAVICON_PATH = Path("assets/emma-favicon.svg")
 DB_PATH = Path("emma.db")
 LOGS_DIR = Path("logs/chat_audit")
+RAG_AUDIT_DIR = Path("logs/rag_audit")
 VALID_ROLES = {"admin", "user", "read_only"}
 
 FILES_ROOT = Path("files")
@@ -358,6 +359,157 @@ def save_description_to_index(base_dir: Path, stem: str, description: str) -> No
     index = prune_index_entries(base_dir, "files_index.json")
     index[stem] = description
     idx_path.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+PROMPT_INJECTION_PATTERNS = [
+    (
+        "ignore_previous_instructions",
+        "high",
+        re.compile(r"\b(ignore|disregard|forget)\b.{0,80}\b(previous|prior|above|system|developer)\b.{0,40}\binstructions?\b", re.I | re.S),
+    ),
+    (
+        "role_override",
+        "high",
+        re.compile(r"\b(you are now|act as|pretend to be|switch role|new role)\b.{0,80}\b(system|developer|administrator|admin|root)\b", re.I | re.S),
+    ),
+    (
+        "prompt_or_secret_exfiltration",
+        "high",
+        re.compile(r"\b(reveal|print|show|output|dump|exfiltrate)\b.{0,80}\b(system prompt|hidden prompt|developer message|instructions|api key|secret|token)\b", re.I | re.S),
+    ),
+    (
+        "security_bypass",
+        "high",
+        re.compile(r"\b(bypass|disable|override|ignore)\b.{0,80}\b(safety|security|guardrails?|policy|filters?|rules?)\b", re.I | re.S),
+    ),
+    (
+        "tool_or_action_request",
+        "medium",
+        re.compile(r"\b(call|invoke|use|run|execute)\b.{0,80}\b(tool|function|command|shell|python|browser|http request)\b", re.I | re.S),
+    ),
+    (
+        "output_format_override",
+        "medium",
+        re.compile(r"\b(do not|don't|never)\b.{0,80}\b(use|include|write)\b.{0,40}\b(tags?|citations?|sources?|rules?)\b", re.I | re.S),
+    ),
+]
+
+
+def prompt_injection_excerpt(text: str, start: int, end: int, radius: int = 120) -> str:
+    excerpt_start = max(0, start - radius)
+    excerpt_end = min(len(text), end + radius)
+    excerpt = text[excerpt_start:excerpt_end]
+    return re.sub(r"\s+", " ", excerpt).strip()
+
+
+def assess_rag_prompt_injection(text: str) -> dict:
+    matches = []
+    seen = set()
+    for signal, severity, pattern in PROMPT_INJECTION_PATTERNS:
+        for match in pattern.finditer(text or ""):
+            key = (signal, match.start(), match.end())
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append(
+                {
+                    "signal": signal,
+                    "severity": severity,
+                    "excerpt": prompt_injection_excerpt(text, match.start(), match.end()),
+                }
+            )
+            break
+    severity_rank = {"low": 1, "medium": 2, "high": 3}
+    highest = "none"
+    if matches:
+        highest = max((item["severity"] for item in matches), key=lambda value: severity_rank.get(value, 0))
+    return {
+        "has_any": bool(matches),
+        "risk": highest,
+        "matches": matches,
+        "status": "checked",
+    }
+
+
+def save_security_to_index(base_dir: Path, stem: str, assessment: dict) -> None:
+    if not (base_dir / f"{stem}.txt").exists():
+        return
+    idx_path = base_dir / "security_index.json"
+    index = prune_index_entries(base_dir, "security_index.json")
+    index[stem] = {
+        "has_any": bool(assessment.get("has_any")),
+        "risk": assessment.get("risk") or "none",
+        "matches": assessment.get("matches") if isinstance(assessment.get("matches"), list) else [],
+        "status": "checked",
+        "checked_at": datetime.utcnow().isoformat(),
+    }
+    idx_path.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def security_response(record: dict | None, status: str = "unchecked") -> dict:
+    if not isinstance(record, dict):
+        return {"has_any": False, "risk": "none", "matches": [], "status": status}
+    matches = record.get("matches") if isinstance(record.get("matches"), list) else []
+    response = {
+        "has_any": bool(record.get("has_any")) and bool(matches),
+        "risk": record.get("risk") or ("medium" if matches else "none"),
+        "matches": matches,
+        "status": record.get("status") or status,
+    }
+    if record.get("checked_at"):
+        response["checked_at"] = record["checked_at"]
+    return response
+
+
+def rotate_rag_audit_logs(max_files: int = 500, delete_count: int = 50) -> None:
+    try:
+        files = sorted(RAG_AUDIT_DIR.glob("*.json"), key=lambda path: path.stat().st_mtime)
+        if len(files) < max_files:
+            return
+        for path in files[:delete_count]:
+            path.unlink(missing_ok=True)
+    except Exception as exc:
+        print(f"[rag-audit] failed to rotate audit logs: {exc}")
+
+
+def build_rag_audit_record(
+    txt_path: Path,
+    scope: str,
+    owner_id: int | None,
+    assessment: dict,
+) -> dict:
+    return {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "audit_type": "suspicious_rag",
+        "file": {
+            "name": txt_path.name,
+            "stem": txt_path.stem,
+            "scope": scope,
+            "owner_id": owner_id,
+            "path": str(txt_path),
+        },
+        "security": security_response(assessment, "checked"),
+    }
+
+
+def persist_suspicious_rag_audit_log(
+    txt_path: Path,
+    scope: str,
+    owner_id: int | None,
+    assessment: dict,
+) -> None:
+    if not assessment.get("has_any"):
+        return
+    try:
+        RAG_AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+        rotate_rag_audit_logs()
+        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S%fZ")
+        safe_stem = re.sub(r"[^\w.-]+", "_", txt_path.stem).strip("_") or "rag"
+        path = RAG_AUDIT_DIR / f"suspicious_rag_{ts}_{safe_stem}_{secrets.token_hex(4)}.json"
+        record = build_rag_audit_record(txt_path, scope, owner_id, assessment)
+        path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        print(f"[rag-audit] failed to persist audit log: {exc}")
 
 
 def load_conflicts_index(base_dir: Path) -> dict:
@@ -851,6 +1003,9 @@ async def process_rag_file(
     json_path = chunks_dir / f"{txt_path.stem}.json"
     json_path.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     save_description_to_index(txt_path.parent, txt_path.stem, build_document_description(text))
+    security_assessment = assess_rag_prompt_injection(text)
+    save_security_to_index(txt_path.parent, txt_path.stem, security_assessment)
+    persist_suspicious_rag_audit_log(txt_path, scope, owner_id, security_assessment)
     if user is not None:
         conflicts = await detect_rag_inconsistencies(
             new_name=txt_path.name,
@@ -1086,7 +1241,7 @@ def should_persist_chat_audit(safety: dict) -> bool:
     return safety.get("label") in {"REVIEW", "SUSPICIOUS"}
 
 
-def rotate_chat_audit_logs(max_files: int = 100, delete_count: int = 50) -> None:
+def rotate_chat_audit_logs(max_files: int = 500, delete_count: int = 50) -> None:
     try:
         files = sorted(LOGS_DIR.glob("*.json"), key=lambda path: path.stat().st_mtime)
         if len(files) < max_files:
@@ -1209,6 +1364,7 @@ def append_file_entries(
 ) -> None:
     index = prune_index_entries(files_dir, "files_index.json")
     conflicts = prune_index_entries(files_dir, "conflicts_index.json")
+    security = prune_index_entries(files_dir, "security_index.json")
     for txt_path in sorted(files_dir.glob("*.txt")):
         stem = txt_path.stem
         json_path = chunks_dir / f"{stem}.json"
@@ -1234,6 +1390,13 @@ def append_file_entries(
             inconsistencies = conflicts_response(conflicts.get(stem), "checked")
         else:
             inconsistencies = conflicts_response(None, "unindexed" if not indexed else "unchecked")
+        if indexed and stem not in security:
+            try:
+                assessment = assess_rag_prompt_injection(txt_path.read_text(encoding="utf-8", errors="ignore"))
+                save_security_to_index(files_dir, stem, assessment)
+                security[stem] = assessment
+            except Exception:
+                pass
         result.append(
             {
                 "name": txt_path.name,
@@ -1245,6 +1408,7 @@ def append_file_entries(
                 "chunks": chunks,
                 "description": index.get(stem, ""),
                 "inconsistencies": inconsistencies,
+                "security": security_response(security.get(stem), "unindexed" if not indexed else "unchecked"),
             }
         )
 
@@ -1283,6 +1447,7 @@ async def favicon():
 def initialize_runtime():
     init_db()
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    RAG_AUDIT_DIR.mkdir(parents=True, exist_ok=True)
     GLOBAL_FILES_DIR.mkdir(parents=True, exist_ok=True)
     GLOBAL_CHUNKS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1567,7 +1732,10 @@ async def upload_file(
     safe_name = re.sub(r"_+", "_", safe_name)
     dest = dest_dir / safe_name
     duplicate_name = dest.exists()
-    dest.write_bytes(await file.read())
+    file_bytes = await file.read()
+    dest.write_bytes(file_bytes)
+    uploaded_text = file_bytes.decode("utf-8", errors="ignore")
+    security = assess_rag_prompt_injection(uploaded_text)
     indexing_user = dict(user)
     asyncio.create_task(process_rag_file(dest, chunks_dir, scope, target_user_id, indexing_user))
     return {
@@ -1578,6 +1746,7 @@ async def upload_file(
         "message": "File received, splitting into chunks and checking inconsistencies...",
         "duplicate_name": duplicate_name,
         "inconsistencies": [],
+        "security": security,
     }
 
 
@@ -1606,7 +1775,7 @@ async def delete_file(
         if path.exists():
             path.unlink()
             deleted.append(path.name)
-    for idx_name in ["files_index.json", "conflicts_index.json"]:
+    for idx_name in ["files_index.json", "conflicts_index.json", "security_index.json"]:
         idx_path = files_dir / idx_name
         if idx_path.exists():
             try:
@@ -1648,7 +1817,7 @@ async def delete_all_files(
             if path.exists():
                 path.unlink()
                 deleted_count += 1
-    for idx_path in [files_dir / "files_index.json", files_dir / "conflicts_index.json"]:
+    for idx_path in [files_dir / "files_index.json", files_dir / "conflicts_index.json", files_dir / "security_index.json"]:
         if idx_path.exists():
             idx_path.write_text("{}", encoding="utf-8")
     return {"status": "ok", "scope": scope, "deleted_count": deleted_count}

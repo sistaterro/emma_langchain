@@ -1129,6 +1129,33 @@
       `;
     }
 
+    function securityRiskLabel(risk) {
+      return String(risk || 'medium').toUpperCase();
+    }
+
+    function renderSecurityDetails(security) {
+      if (!security || !security.has_any) return '';
+      return `
+        <div class="alert-claims" style="margin-top:10px">
+          <div class="alert-item" style="box-shadow:none">
+            <div class="alert-title">
+              <span>Possible prompt injection detected</span>
+              <div class="alert-tags">
+                <span class="alert-tag sev-${security.risk || 'medium'}">${securityRiskLabel(security.risk)}</span>
+              </div>
+            </div>
+            <div class="alert-summary">This RAG contains text that looks like instructions to override assistant behavior. It will still be treated as untrusted context during chat.</div>
+            ${(security.matches || []).map(match => `
+              <div class="alert-claim">
+                <div><strong>${escHtml((match.signal || 'prompt_injection').replace(/_/g, ' '))}</strong> <span class="alert-tag sev-${match.severity || 'medium'}">${securityRiskLabel(match.severity)}</span></div>
+                <div>${escHtml(match.excerpt || '')}</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }
+
     function hasPendingConflictChecks(files = indexedFilesCache) {
       return files.some(f => f.inconsistencies && f.inconsistencies.status === 'checking');
     }
@@ -1191,6 +1218,9 @@
                 matches: data.inconsistencies.matches || [],
               });
               renderAlerts();
+            }
+            if (data.security && data.security.has_any) {
+              showToast(`Detected possible prompt injection in "${file.name}"`, 'error');
             }
             success++;
           } else {
@@ -1267,6 +1297,7 @@
           : '';
         const canDelete = f.scope === 'user' || (currentUser && currentUser.role === 'admin');
         const hasConflicts = !!(f.inconsistencies && f.inconsistencies.has_any);
+        const hasSecurityRisk = !!(f.security && f.security.has_any);
         const conflictStatus = (f.inconsistencies && f.inconsistencies.status) || 'unchecked';
         const checkingConflicts = !hasConflicts && conflictStatus === 'checking';
         const conflictCount = hasConflicts
@@ -1283,15 +1314,17 @@
             <div class="file-meta">
               ${f.chunks} chunks · ${escHtml(f.description || 'No description')}
               ${hasConflicts ? `<span class="alert-tag sev-medium" style="margin-left:8px">CONFLICTS ${conflictCount}</span>` : ''}
+              ${hasSecurityRisk ? `<span class="alert-tag sev-${f.security.risk || 'medium'}" style="margin-left:8px">PROMPT INJECTION ${securityRiskLabel(f.security.risk)}</span>` : ''}
               ${checkingConflicts ? `<span class="alert-tag sev-low" style="margin-left:8px">CHECKING CONFLICTS</span>` : ''}
             </div>
             ${hasConflicts ? `<div class="alert-summary" style="margin-top:6px">${escHtml((f.inconsistencies.matches || [])[0]?.summary || 'Possible factual conflicts detected')}</div>` : ''}
             ${hasConflicts ? renderConflictDetails(f.inconsistencies) : ''}
+            ${hasSecurityRisk ? renderSecurityDetails(f.security) : ''}
             ${f.indexed ? `<div class="progress-wrap"><div class="progress-bar" style="width:100%"></div></div>` : ''}
           </div>
           <div class="file-status">
-            <div class="status-dot ${hasConflicts ? 'error' : (checkingConflicts || !f.indexed ? 'indexing' : 'ready')}"></div>
-            <span class="status-text ${hasConflicts ? 'error' : (checkingConflicts || !f.indexed ? 'indexing' : 'ready')}">${hasConflicts ? 'Conflicts' : (checkingConflicts ? 'Checking' : (f.indexed ? 'Ready' : 'Indexing'))}</span>
+            <div class="status-dot ${(hasConflicts || hasSecurityRisk) ? 'error' : (checkingConflicts || !f.indexed ? 'indexing' : 'ready')}"></div>
+            <span class="status-text ${(hasConflicts || hasSecurityRisk) ? 'error' : (checkingConflicts || !f.indexed ? 'indexing' : 'ready')}">${hasConflicts ? 'Conflicts' : (hasSecurityRisk ? 'Security' : (checkingConflicts ? 'Checking' : (f.indexed ? 'Ready' : 'Indexing')))}</span>
           </div>
           <a class="file-remove" href="${BASE_URL}/files/${f.scope}/${f.stem}/download?token=${getToken()}" download title="Download">↓</a>
           ${canDelete ? `<button class="file-remove" onclick="deleteFile('${f.scope}','${f.stem}')" title="Delete">×</button>` : ''}
