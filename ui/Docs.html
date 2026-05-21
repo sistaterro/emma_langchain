@@ -977,7 +977,7 @@ uvicorn server:app --reload --port 8000</code></pre>
           <tbody>
             <tr><td>chunk_text()</td><td>Normalizes document text and produces JSON-ready chunks.</td></tr>
             <tr><td>process_rag_file()</td><td>Indexes a source file, saves chunks, stores descriptions, runs security analysis, writes RAG audits, and schedules conflict checks.</td></tr>
-            <tr><td>assess_rag_prompt_injection()</td><td>Local heuristic detector for suspicious RAG instructions. Produces <code>none</code>, <code>medium</code>, or <code>high</code> risk.</td></tr>
+            <tr><td>assess_rag_prompt_injection()</td><td>Model-based multilingual detector for suspicious RAG instructions. Produces <code>none</code>, <code>medium</code>, or <code>high</code> risk.</td></tr>
             <tr><td>visible_chat_chunk_sources()</td><td>Collects chat-visible RAG sources and filters out high-risk RAGs before chunks can enter the prompt.</td></tr>
             <tr><td>build_chat_messages_with_all_visible_chunks()</td><td>Builds the final chat messages with safe RAG context from <code>prompts.py</code>.</td></tr>
             <tr><td>generate_ai_reply()</td><td>Runs generation through the LangChain provider factory.</td></tr>

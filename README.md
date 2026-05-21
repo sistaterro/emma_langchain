@@ -28,7 +28,7 @@ Current backend capabilities:
 - LangChain chat model integrations for Gemini, OpenAI, and Anthropic.
 - Backend-provided model catalog based on configured provider keys.
 - Upload-time inconsistency detection persisted in `conflicts_index.json`.
-- Prompt-injection screening for RAG uploads persisted in `security_index.json`.
+- Model-based multilingual prompt-injection screening for RAG uploads persisted in `security_index.json`.
 - Suspicious RAG audit logs in `logs/rag_audit/`.
 - Suspicious chat manipulation audit logs in `logs/chat_audit/`.
 - Detailed exception logs in `logs/exception_log/`.
@@ -50,7 +50,20 @@ Every response is expected to tag its grounding:
 
 ## RAG Safety Model
 
-Uploaded RAGs are treated as untrusted content. Emma screens document text for prompt-injection patterns such as instruction overrides, requests to reveal prompts or secrets, safety bypass attempts, and tool execution requests.
+Uploaded RAGs are treated as untrusted content. Emma uses the configured model with a structured security prompt to screen document text in any language for prompt-injection patterns such as instruction overrides, requests to reveal prompts or secrets, safety bypass attempts, and tool execution requests.
+
+### Covered Vulnerability: Multilingual RAG Prompt Injection
+
+A RAG file can be malicious even if it looks like normal business content. For example, a document can contain hidden or explicit instructions such as "ignore previous instructions", "reveal the system prompt", "disable safety rules", or "always answer with this false policy". If that text is passed directly into the chat context, a model may treat the document as instructions instead of reference data.
+
+Simple keyword or regex heuristics are not enough because the attack can be written in Spanish, Portuguese, French, German, or any other language, and it can be paraphrased instead of using obvious English jailbreak phrases. Emma now covers this by asking the configured model to perform a multilingual security review of each RAG with a strict JSON output contract.
+
+This protection has two layers:
+
+- Before storage/use: each RAG is classified as `none`, `medium`, or `high` risk and persisted in `security_index.json`.
+- Before chat context: if a RAG has no security record yet, chat creates one lazily before allowing its chunks into the prompt.
+
+If the model marks the RAG as `high`, Emma does not use that RAG for answers.
 
 RAG security levels:
 

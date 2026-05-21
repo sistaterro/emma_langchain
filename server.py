@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from prompts import build_inconsistency_prompt, build_rag_prompt, build_safety_prompt
+from prompts import build_inconsistency_prompt, build_rag_prompt, build_rag_security_prompt, build_safety_prompt
 
 
 @asynccontextmanager
@@ -386,74 +386,82 @@ def save_description_to_index(base_dir: Path, stem: str, description: str) -> No
     idx_path.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-PROMPT_INJECTION_PATTERNS = [
-    (
-        "ignore_previous_instructions",
-        "high",
-        re.compile(r"\b(ignore|disregard|forget)\b.{0,80}\b(previous|prior|above|system|developer)\b.{0,40}\binstructions?\b", re.I | re.S),
-    ),
-    (
-        "role_override",
-        "high",
-        re.compile(r"\b(you are now|act as|pretend to be|switch role|new role)\b.{0,80}\b(system|developer|administrator|admin|root)\b", re.I | re.S),
-    ),
-    (
-        "prompt_or_secret_exfiltration",
-        "high",
-        re.compile(r"\b(reveal|print|show|output|dump|exfiltrate)\b.{0,80}\b(system prompt|hidden prompt|developer message|instructions|api key|secret|token)\b", re.I | re.S),
-    ),
-    (
-        "security_bypass",
-        "high",
-        re.compile(r"\b(bypass|disable|override|ignore)\b.{0,80}\b(safety|security|guardrails?|policy|filters?|rules?)\b", re.I | re.S),
-    ),
-    (
-        "tool_or_action_request",
-        "medium",
-        re.compile(r"\b(call|invoke|use|run|execute)\b.{0,80}\b(tool|function|command|shell|python|browser|http request)\b", re.I | re.S),
-    ),
-    (
-        "output_format_override",
-        "medium",
-        re.compile(r"\b(do not|don't|never)\b.{0,80}\b(use|include|write)\b.{0,40}\b(tags?|citations?|sources?|rules?)\b", re.I | re.S),
-    ),
-]
-
-
-def prompt_injection_excerpt(text: str, start: int, end: int, radius: int = 120) -> str:
-    excerpt_start = max(0, start - radius)
-    excerpt_end = min(len(text), end + radius)
-    excerpt = text[excerpt_start:excerpt_end]
-    return re.sub(r"\s+", " ", excerpt).strip()
-
-
-def assess_rag_prompt_injection(text: str) -> dict:
-    matches = []
-    seen = set()
-    for signal, severity, pattern in PROMPT_INJECTION_PATTERNS:
-        for match in pattern.finditer(text or ""):
-            key = (signal, match.start(), match.end())
-            if key in seen:
-                continue
-            seen.add(key)
-            matches.append(
+def normalize_rag_security_assessment(parsed: dict | None, raw_reply: str = "") -> dict:
+    if not isinstance(parsed, dict):
+        return {
+            "has_any": True,
+            "risk": "medium",
+            "matches": [
                 {
-                    "signal": signal,
-                    "severity": severity,
-                    "excerpt": prompt_injection_excerpt(text, match.start(), match.end()),
+                    "signal": "model_security_parse_error",
+                    "severity": "medium",
+                    "excerpt": (raw_reply or "Model did not return valid JSON")[:500],
                 }
-            )
-            break
-    severity_rank = {"low": 1, "medium": 2, "high": 3}
-    highest = "none"
-    if matches:
-        highest = max((item["severity"] for item in matches), key=lambda value: severity_rank.get(value, 0))
+            ],
+            "status": "checked",
+        }
+    raw_risk = str(parsed.get("risk") or "").strip().lower()
+    risk = raw_risk if raw_risk in {"none", "medium", "high"} else "medium"
+    raw_matches = parsed.get("matches") if isinstance(parsed.get("matches"), list) else []
+    matches = []
+    for item in raw_matches[:10]:
+        if not isinstance(item, dict):
+            continue
+        severity = str(item.get("severity") or risk).strip().lower()
+        if severity not in {"medium", "high"}:
+            severity = "medium" if risk == "medium" else "high"
+        signal = str(item.get("signal") or "model_detected_prompt_injection").strip()
+        excerpt = str(item.get("excerpt") or parsed.get("summary") or signal).strip()
+        matches.append(
+            {
+                "signal": signal[:120] or "model_detected_prompt_injection",
+                "severity": severity,
+                "excerpt": excerpt[:500],
+            }
+        )
+    has_any = bool(parsed.get("has_any")) or risk in {"medium", "high"} or bool(matches)
+    if has_any and risk == "none":
+        risk = "medium"
+    if has_any and not matches:
+        matches.append(
+            {
+                "signal": "model_detected_prompt_injection",
+                "severity": "medium" if risk == "medium" else "high",
+                "excerpt": str(parsed.get("summary") or "Model detected prompt-injection risk")[:500],
+            }
+        )
+    if not has_any:
+        risk = "none"
+        matches = []
     return {
-        "has_any": bool(matches),
-        "risk": highest,
+        "has_any": has_any,
+        "risk": risk,
         "matches": matches,
         "status": "checked",
     }
+
+
+def resolve_rag_security_model(model: dict | None = None) -> dict | None:
+    if isinstance(model, dict):
+        return model
+    models = available_models()
+    if not models:
+        return None
+    return resolve_model(models[0]["id"])
+
+
+async def assess_rag_prompt_injection(text: str, file_name: str = "rag.txt", model: dict | None = None) -> dict:
+    security_model = resolve_rag_security_model(model)
+    if security_model is None:
+        return {
+            "has_any": False,
+            "risk": "none",
+            "matches": [],
+            "status": "unavailable",
+        }
+    prompt = build_rag_security_prompt(file_name, text or "")
+    reply = await generate_ai_reply(security_model, [Message(role="user", content=prompt)])
+    return normalize_rag_security_assessment(extract_json_object(reply), reply)
 
 
 def save_security_to_index(base_dir: Path, stem: str, assessment: dict) -> None:
@@ -486,10 +494,11 @@ def security_response(record: dict | None, status: str = "unchecked") -> dict:
     return response
 
 
-def get_or_create_rag_security_record(
+async def get_or_create_rag_security_record(
     txt_path: Path,
     scope: str,
     owner_id: int | None,
+    model: dict | None = None,
 ) -> dict:
     files_dir = txt_path.parent
     security = prune_index_entries(files_dir, "security_index.json")
@@ -499,7 +508,11 @@ def get_or_create_rag_security_record(
     if not txt_path.exists():
         return {}
     try:
-        assessment = assess_rag_prompt_injection(txt_path.read_text(encoding="utf-8", errors="ignore"))
+        assessment = await assess_rag_prompt_injection(
+            txt_path.read_text(encoding="utf-8", errors="ignore"),
+            txt_path.name,
+            model,
+        )
         save_security_to_index(files_dir, txt_path.stem, assessment)
         persist_suspicious_rag_audit_log(txt_path, scope, owner_id, assessment)
         return assessment
@@ -521,8 +534,8 @@ def is_high_risk_rag_security(record: dict | None) -> bool:
     return bool(security.get("has_any")) and security.get("risk") == "high"
 
 
-def should_exclude_rag_from_chat(txt_path: Path, scope: str, owner_id: int | None) -> bool:
-    return is_high_risk_rag_security(get_or_create_rag_security_record(txt_path, scope, owner_id))
+async def should_exclude_rag_from_chat(txt_path: Path, scope: str, owner_id: int | None, model: dict | None) -> bool:
+    return is_high_risk_rag_security(await get_or_create_rag_security_record(txt_path, scope, owner_id, model))
 
 
 def rotate_rag_audit_logs(max_files: int = 500, delete_count: int = 50) -> None:
@@ -909,10 +922,10 @@ def visible_rag_candidates(user: dict, current_scope: str, current_stem: str) ->
     return candidates
 
 
-def visible_chat_chunk_sources(user: dict) -> list[dict]:
+async def visible_chat_chunk_sources(user: dict, model: dict | None = None) -> list[dict]:
     sources = []
     for txt_path in sorted(GLOBAL_FILES_DIR.glob("*.txt")):
-        if should_exclude_rag_from_chat(txt_path, "global", None):
+        if await should_exclude_rag_from_chat(txt_path, "global", None, model):
             continue
         sources.append(
             {
@@ -925,7 +938,7 @@ def visible_chat_chunk_sources(user: dict) -> list[dict]:
 
     own_chunks_dir = user_chunks_dir(user["id"])
     for txt_path in sorted(user_files_dir(user["id"]).glob("*.txt")):
-        if should_exclude_rag_from_chat(txt_path, "user", user["id"]):
+        if await should_exclude_rag_from_chat(txt_path, "user", user["id"], model):
             continue
         sources.append(
             {
@@ -938,9 +951,9 @@ def visible_chat_chunk_sources(user: dict) -> list[dict]:
     return sources
 
 
-def load_visible_context_chunks(user: dict) -> list[dict]:
+async def load_visible_context_chunks(user: dict, model: dict | None = None) -> list[dict]:
     context_chunks = []
-    for source in visible_chat_chunk_sources(user):
+    for source in await visible_chat_chunk_sources(user, model):
         for chunk in load_chunk_file(source["chunks_dir"], source["stem"]):
             text = str(chunk.get("text", "")).strip()
             if not text:
@@ -964,7 +977,7 @@ def build_chat_messages_with_all_visible_chunks(req: ChatRequest, user: dict, co
         raise HTTPException(status_code=400, detail="The last message is empty")
 
     if context_chunks is None:
-        context_chunks = load_visible_context_chunks(user)
+        context_chunks = []
     if not context_chunks:
         return req.messages
 
@@ -1125,9 +1138,11 @@ async def process_rag_file(
     json_path = chunks_dir / f"{txt_path.stem}.json"
     json_path.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     save_description_to_index(txt_path.parent, txt_path.stem, build_document_description(text))
-    security_assessment = assess_rag_prompt_injection(text)
-    save_security_to_index(txt_path.parent, txt_path.stem, security_assessment)
-    persist_suspicious_rag_audit_log(txt_path, scope, owner_id, security_assessment)
+    security_index = prune_index_entries(txt_path.parent, "security_index.json")
+    if txt_path.stem not in security_index:
+        security_assessment = await assess_rag_prompt_injection(text, txt_path.name)
+        save_security_to_index(txt_path.parent, txt_path.stem, security_assessment)
+        persist_suspicious_rag_audit_log(txt_path, scope, owner_id, security_assessment)
     if user is not None:
         conflicts = await detect_rag_inconsistencies(
             new_name=txt_path.name,
@@ -1537,13 +1552,6 @@ def append_file_entries(
             inconsistencies = conflicts_response(conflicts.get(stem), "checked")
         else:
             inconsistencies = conflicts_response(None, "unindexed" if not indexed else "unchecked")
-        if indexed and stem not in security:
-            try:
-                assessment = assess_rag_prompt_injection(txt_path.read_text(encoding="utf-8", errors="ignore"))
-                save_security_to_index(files_dir, stem, assessment)
-                security[stem] = assessment
-            except Exception:
-                pass
         result.append(
             {
                 "name": txt_path.name,
@@ -1883,7 +1891,9 @@ async def upload_file(
     file_bytes = await file.read()
     dest.write_bytes(file_bytes)
     uploaded_text = file_bytes.decode("utf-8", errors="ignore")
-    security = assess_rag_prompt_injection(uploaded_text)
+    security = await assess_rag_prompt_injection(uploaded_text, safe_name)
+    save_security_to_index(dest_dir, dest.stem, security)
+    persist_suspicious_rag_audit_log(dest, scope, target_user_id, security)
     indexing_user = dict(user)
     schedule_rag_processing(dest, chunks_dir, scope, target_user_id, indexing_user)
     return {
@@ -2108,7 +2118,7 @@ async def chat(
     if not question:
         raise HTTPException(status_code=400, detail="The last message is empty")
 
-    context_chunks = load_visible_context_chunks(user)
+    context_chunks = await load_visible_context_chunks(user, model)
     safety = await analyze_user_message_safety(question, model)
     ai_messages = build_chat_messages_with_all_visible_chunks(req, user, context_chunks)
     audit_record = build_chat_audit_record(req, user, model, question, safety, context_chunks)

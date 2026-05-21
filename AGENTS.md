@@ -174,7 +174,8 @@ Practical rule:
 - Keep API keys server-side only. `/health` may report available providers/models, but must never return secret values.
 - RAG ingestion writes chunks as JSON only. Embeddings and `.npy` files are not part of the current rebuilt flow.
 - Inconsistency detection is asynchronous and persisted in `conflicts_index.json`.
-- RAG prompt-injection detection is local/heuristic, runs during ingestion, and persists results in `security_index.json` next to the RAG files.
+- RAG prompt-injection detection is model-based, multilingual, runs during ingestion, and persists results in `security_index.json` next to the RAG files.
+- Missing RAG security records may be created lazily by chat using the currently selected chat model before chunks are allowed into context.
 - RAG security levels are `none`, `medium`, and `high`; treat `high` as dangerous for the system and `medium` as requiring review.
 - Chat must not use RAG chunks whose prompt-injection security result is `high`. `visible_chat_chunk_sources(...)` is responsible for filtering them out, and it creates a missing security assessment lazily before a RAG can be used.
 - `/files` is responsible for surfacing persisted conflict state and scheduling missing checks for indexed RAGs that have no conflict record yet.
