@@ -85,8 +85,8 @@
     /* ── GRID ── */
     .card-grid {
       display: grid;
-      width: min(100%, 920px);
-      grid-template-columns: repeat(auto-fit, minmax(260px, 280px));
+      width: min(100%, 600px);
+      grid-template-columns: repeat(2, minmax(260px, 280px));
       gap: 20px;
       justify-content: center;
     }
@@ -624,21 +624,21 @@
       <span class="card-arrow">→</span>
     </a>
 
-    <!-- DOCS -->
-    <a class="card card-docs" href="docs.html">
-      <span class="card-label">Reference</span>
-      <div class="upload-icon" style="background:#f0f4ff; border-color:rgba(0,113,227,0.2);">📖</div>
-      <div class="card-title">Documentation</div>
-      <p class="card-desc">Architecture, API reference, RAG pipeline and server internals.</p>
-      <span class="card-arrow">→</span>
-    </a>
-
     <!-- ADMIN -->
     <a class="card card-admin" href="admin.html" id="card-admin" style="display:none">
       <span class="card-label">Administration</span>
       <div class="docs-icon" style="background:#fff0ef; border-color:rgba(255,59,48,0.2);">⚙️</div>
       <div class="card-title">Admin <span style="color:var(--red)">Panel</span></div>
       <p class="card-desc">Manage users, global RAGs and system status.</p>
+      <span class="card-arrow">→</span>
+    </a>
+
+    <!-- DOCS -->
+    <a class="card card-docs" href="docs.html">
+      <span class="card-label">Reference</span>
+      <div class="upload-icon" style="background:#f0f4ff; border-color:rgba(0,113,227,0.2);">📖</div>
+      <div class="card-title">Documentation</div>
+      <p class="card-desc">Architecture, API reference, RAG pipeline and server internals.</p>
       <span class="card-arrow">→</span>
     </a>
   </div>

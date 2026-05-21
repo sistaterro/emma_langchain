@@ -338,14 +338,18 @@
     .feat-card:nth-child(6)::before { background: linear-gradient(90deg, #5856d6, #6e6cd4); }
 
     .feat-icon-wrap {
-      width: 40px;
+      min-width: 44px;
+      width: max-content;
       height: 40px;
+      padding: 0 8px;
       border-radius: 10px;
       display: flex;
       align-items: center;
       justify-content: center;
       margin-bottom: 14px;
-      font-size: 18px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
       flex-shrink: 0;
     }
     .feat-card:nth-child(1) .feat-icon-wrap { background: rgba(0,113,227,0.1); }
@@ -681,37 +685,37 @@
 
       <div class="feat-grid">
         <div class="feat-card">
-          <div class="feat-icon-wrap">Lock</div>
+          <div class="feat-icon-wrap">LOCK</div>
           <div class="feat-title">Local-first</div>
           <div class="feat-desc">Documents, chunks, users, conversations, and logs stay local. Generation uses configured provider APIs through LangChain.</div>
           <div class="feat-tag">Local</div>
         </div>
         <div class="feat-card">
-          <div class="feat-icon-wrap">Doc</div>
+          <div class="feat-icon-wrap">DOC</div>
           <div class="feat-title">Document-grounded</div>
           <div class="feat-desc">Every answer can use visible safe RAG chunks. High-risk RAGs are kept out of chat context.</div>
           <div class="feat-tag">RAG</div>
         </div>
         <div class="feat-card">
-          <div class="feat-icon-wrap">Live</div>
+          <div class="feat-icon-wrap">LIVE</div>
           <div class="feat-title">Streaming chat</div>
           <div class="feat-desc">The assistant message appears incrementally in the frontend as the provider streams tokens.</div>
           <div class="feat-tag">Stream</div>
         </div>
         <div class="feat-card">
-          <div class="feat-icon-wrap">Tag</div>
+          <div class="feat-icon-wrap">TAG</div>
           <div class="feat-title">Auditable responses</div>
           <div class="feat-desc">Every response is tagged [RAG], [DRIFT] or [NO INFO] so you always know the source.</div>
           <div class="feat-tag">Audit</div>
         </div>
         <div class="feat-card">
-          <div class="feat-icon-wrap">Warn</div>
+          <div class="feat-icon-wrap">WARN</div>
           <div class="feat-title">RAG conflict detection</div>
           <div class="feat-desc">New uploads are checked against existing RAGs so Emma can warn about likely contradictions before they poison later answers.</div>
           <div class="feat-tag">Check</div>
         </div>
         <div class="feat-card">
-          <div class="feat-icon-wrap">Guard</div>
+          <div class="feat-icon-wrap">GUARD</div>
           <div class="feat-title">Prompt-injection defense</div>
           <div class="feat-desc">RAG uploads are scored as none, medium, or high risk. High-risk RAGs are blocked from chat context.</div>
           <div class="feat-tag">Guard</div>

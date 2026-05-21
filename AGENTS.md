@@ -57,6 +57,7 @@ The rebuild goal is to keep endpoint behavior explicit while moving model calls 
 - `ui/index.html`
   - Main home screen.
   - Should reflect visible permissions and available entry points by role.
+  - Card order should stay: Chat Emma, Upload Files, Admin Panel, Documentation. The admin card is role-gated, but when visible the desktop/tablet-wide layout should be a stable 2x2 grid.
 
 - `ui/chat.html`
   - Main chat client.
@@ -193,6 +194,7 @@ Practical rule:
 - Preserve the current visual language unless the goal is explicitly to redesign it.
 - Solve responsiveness with measured, concrete changes, not complete rewrites.
 - When cards or grids are conditionally shown by role, ensure stable centering and layout even when the number of visible items changes.
+- On the home screen, preserve the 2-column card grid for wide responsive layouts so admin users see two rows with two entries.
 - If a screen does not apply to a role, hide it and block direct access when appropriate.
 - Visible UI version references currently use Emma 2.0.
 
