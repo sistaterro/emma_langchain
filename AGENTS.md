@@ -54,6 +54,10 @@ The rebuild goal is to keep endpoint behavior explicit while moving model calls 
   - Currently contains only active prompts: `build_inconsistency_prompt(...)` and `build_rag_prompt(...)`.
   - Do not reintroduce routing prompts for "most relevant" files unless the RAG strategy changes again.
 
+- `rag_security.py`
+  - Canonical location for RAG prompt-injection security analysis, security index persistence, high-risk exclusion decisions, and suspicious RAG audit log creation/rotation.
+  - Keep multilingual model-based RAG security review here instead of growing `server.py`.
+
 - `ui/index.html`
   - Main home screen.
   - Should reflect visible permissions and available entry points by role.
@@ -174,7 +178,7 @@ Practical rule:
 - Keep API keys server-side only. `/health` may report available providers/models, but must never return secret values.
 - RAG ingestion writes chunks as JSON only. Embeddings and `.npy` files are not part of the current rebuilt flow.
 - Inconsistency detection is asynchronous and persisted in `conflicts_index.json`.
-- RAG prompt-injection detection is model-based, multilingual, runs during ingestion, and persists results in `security_index.json` next to the RAG files.
+- RAG prompt-injection detection is model-based, multilingual, lives in `rag_security.py`, runs during ingestion, and persists results in `security_index.json` next to the RAG files.
 - Missing RAG security records may be created lazily by chat using the currently selected chat model before chunks are allowed into context.
 - RAG security levels are `none`, `medium`, and `high`; treat `high` as dangerous for the system and `medium` as requiring review.
 - Chat must not use RAG chunks whose prompt-injection security result is `high`. `visible_chat_chunk_sources(...)` is responsible for filtering them out, and it creates a missing security assessment lazily before a RAG can be used.
