@@ -9,10 +9,13 @@ from fastapi.testclient import TestClient
 
 
 class FakeSentenceTransformer:
+    """Small stand-in for sentence-transformers in permission tests."""
     def __init__(self, *_args, **_kwargs):
+        """Initialize the test double."""
         pass
 
     def encode(self, texts, **_kwargs):
+        """Return deterministic embeddings for tests that import sentence-transformers."""
         import numpy as np
 
         if isinstance(texts, str):
@@ -21,8 +24,10 @@ class FakeSentenceTransformer:
 
 
 class PermissionSmokeTests(unittest.TestCase):
+    """Smoke tests for role-based access restrictions."""
     @classmethod
     def setUpClass(cls):
+        """Import server state once for this test case."""
         fake_module = types.ModuleType("sentence_transformers")
         fake_module.SentenceTransformer = FakeSentenceTransformer
         sys.modules["sentence_transformers"] = fake_module
@@ -30,6 +35,7 @@ class PermissionSmokeTests(unittest.TestCase):
         cls.server = importlib.import_module("server")
 
     def setUp(self):
+        """Create an isolated runtime workspace for each test."""
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
 
@@ -46,10 +52,12 @@ class PermissionSmokeTests(unittest.TestCase):
         self.client = TestClient(self.server.app)
 
     def tearDown(self):
+        """Clean up the isolated runtime workspace after each test."""
         self.client.close()
         self.tmp.cleanup()
 
     def login(self, username, password):
+        """Authenticate a test user and return its token."""
         response = self.client.post(
             "/auth/login",
             json={"username": username, "password": password},
@@ -58,9 +66,11 @@ class PermissionSmokeTests(unittest.TestCase):
         return response.json()["token"]
 
     def auth_headers(self, token):
+        """Build bearer-token headers for test requests."""
         return {"Authorization": f"Bearer {token}"}
 
     def test_read_only_user_cannot_use_admin_or_file_management_endpoints(self):
+        """Function for test read only user cannot use admin or file management endpoints."""
         admin_token = self.login("admin", "admin1234")
 
         create_response = self.client.post(
@@ -98,6 +108,7 @@ class PermissionSmokeTests(unittest.TestCase):
         self.assertEqual(download_response.status_code, 403)
 
     def test_non_admin_cannot_manage_global_rags(self):
+        """Function for test non admin cannot manage global rags."""
         admin_token = self.login("admin", "admin1234")
 
         create_response = self.client.post(

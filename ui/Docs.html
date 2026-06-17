@@ -988,6 +988,9 @@ uvicorn server:app --reload --port 8000</code></pre>
 
       <h3>Audits and logs</h3>
       <p>Suspicious chat messages are logged in <code>logs/chat_audit/</code>, suspicious RAGs in <code>logs/rag_audit/</code>, and detailed exceptions in <code>logs/exception_log/</code>. Each audit folder rotates at 500 files.</p>
+
+      <h3>Code documentation</h3>
+      <p>Python classes, functions, and async functions should include concise docstrings. New implementation work should add or update docstrings in the same change so future maintainers can understand the backend flow quickly.</p>
     </div>
 
     <div class="divider"></div>

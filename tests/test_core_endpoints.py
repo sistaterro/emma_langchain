@@ -9,11 +9,14 @@ from fastapi.testclient import TestClient
 
 
 class CoreEndpointTests(unittest.TestCase):
+    """Integration-style tests for Emma's core HTTP endpoints."""
     @classmethod
     def setUpClass(cls):
+        """Import server state once for this test case."""
         cls.server = importlib.import_module("server")
 
     def setUp(self):
+        """Create an isolated runtime workspace for each test."""
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.server.DB_PATH = self.root / "emma.db"
@@ -29,29 +32,36 @@ class CoreEndpointTests(unittest.TestCase):
         self.client = TestClient(self.server.app)
 
     def tearDown(self):
+        """Clean up the isolated runtime workspace after each test."""
         self.client.close()
         self.tmp.cleanup()
 
     def login(self, username="admin", password="admin1234"):
+        """Authenticate a test user and return its token."""
         response = self.client.post("/auth/login", json={"username": username, "password": password})
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()["token"]
 
     def auth_headers(self, token):
+        """Build bearer-token headers for test requests."""
         return {"Authorization": f"Bearer {token}"}
 
     def install_fake_rag_security_model(self, risk="high"):
+        """Install fake model functions for RAG security endpoint tests."""
         original_available = self.server.available_models
         original_resolve = self.server.resolve_model
         original_generate = self.server.generate_ai_reply
 
         def fake_available_models():
+            """Return a minimal fake model catalog for tests."""
             return [{"id": "fake:test", "provider": "fake", "model": "test"}]
 
         def fake_resolve_model(selection):
+            """Resolve any fake model selection for tests."""
             return {"id": selection, "provider": "fake", "model": selection}
 
         async def fake_generate_ai_reply(_model, messages):
+            """Return deterministic fake model output for tests."""
             prompt = messages[-1].content
             if "multilingual security reviewer" in prompt:
                 if risk == "high":
@@ -74,9 +84,11 @@ class CoreEndpointTests(unittest.TestCase):
         return original_available, original_resolve, original_generate
 
     def restore_model_functions(self, originals):
+        """Restore model functions patched by a test."""
         self.server.available_models, self.server.resolve_model, self.server.generate_ai_reply = originals
 
     def test_auth_me_and_logout(self):
+        """Function for test auth me and logout."""
         token = self.login()
         headers = self.auth_headers(token)
 
@@ -92,6 +104,7 @@ class CoreEndpointTests(unittest.TestCase):
         self.assertEqual(expired_response.status_code, 401)
 
     def test_admin_user_crud_and_password_reset(self):
+        """Function for test admin user crud and password reset."""
         admin_token = self.login()
         admin_headers = self.auth_headers(admin_token)
 
@@ -136,6 +149,7 @@ class CoreEndpointTests(unittest.TestCase):
         self.assertEqual(login_deleted.status_code, 401)
 
     def test_last_active_admin_cannot_be_disabled_or_deleted(self):
+        """Function for test last active admin cannot be disabled or deleted."""
         token = self.login()
         headers = self.auth_headers(token)
 
@@ -153,6 +167,7 @@ class CoreEndpointTests(unittest.TestCase):
         self.assertEqual(delete_response.status_code, 400)
 
     def test_conversation_crud(self):
+        """Function for test conversation crud."""
         token = self.login()
         headers = self.auth_headers(token)
 
@@ -190,6 +205,7 @@ class CoreEndpointTests(unittest.TestCase):
         self.assertEqual(missing_response.status_code, 404)
 
     def test_file_upload_list_download_delete(self):
+        """Function for test file upload list download delete."""
         token = self.login()
         headers = self.auth_headers(token)
 
@@ -225,6 +241,7 @@ class CoreEndpointTests(unittest.TestCase):
         self.assertFalse((self.server.FILES_ROOT / "1" / "policy.txt").exists())
 
     def test_upload_reports_prompt_injection_security_assessment(self):
+        """Function for test upload reports prompt injection security assessment."""
         originals = self.install_fake_rag_security_model("high")
         token = self.login()
         headers = self.auth_headers(token)
@@ -262,6 +279,7 @@ class CoreEndpointTests(unittest.TestCase):
             self.restore_model_functions(originals)
 
     def test_health_reports_available_models_without_exposing_keys(self):
+        """Function for test health reports available models without exposing keys."""
         self.server.API_KEYS_PATH.write_text(
             json.dumps({"gemini": {"api_key": "secret-gemini-key"}}),
             encoding="utf-8",
@@ -275,12 +293,15 @@ class CoreEndpointTests(unittest.TestCase):
         self.assertNotIn("secret-gemini-key", response.text)
 
     def test_chat_writes_suspicious_audit_log(self):
+        """Function for test chat writes suspicious audit log."""
         calls = []
 
         def fake_resolve_model(selection):
+            """Resolve any fake model selection for tests."""
             return {"id": selection, "provider": "fake", "model": selection}
 
         async def fake_generate_ai_reply(_model, messages):
+            """Return deterministic fake model output for tests."""
             calls.append(messages[-1].content)
             if "Return ONLY valid JSON" in messages[-1].content:
                 return json.dumps(
@@ -326,10 +347,13 @@ class CoreEndpointTests(unittest.TestCase):
             self.server.generate_ai_reply = original_generate
 
     def test_chat_does_not_write_safe_audit_log(self):
+        """Function for test chat does not write safe audit log."""
         def fake_resolve_model(selection):
+            """Resolve any fake model selection for tests."""
             return {"id": selection, "provider": "fake", "model": selection}
 
         async def fake_generate_ai_reply(_model, messages):
+            """Return deterministic fake model output for tests."""
             if "Return ONLY valid JSON" in messages[-1].content:
                 return json.dumps(
                     {
@@ -364,6 +388,7 @@ class CoreEndpointTests(unittest.TestCase):
             self.server.generate_ai_reply = original_generate
 
     def test_chat_audit_rotation_keeps_up_to_500_files(self):
+        """Function for test chat audit rotation keeps up to 500 files."""
         self.server.LOGS_DIR.mkdir(parents=True, exist_ok=True)
         for index in range(499):
             path = self.server.LOGS_DIR / f"suspicious_{index:04d}.json"
@@ -378,6 +403,7 @@ class CoreEndpointTests(unittest.TestCase):
         self.assertEqual(len(list(self.server.LOGS_DIR.glob("*.json"))), 450)
 
     def test_exception_log_persists_detailed_record_and_rotates_at_500(self):
+        """Function for test exception log persists detailed record and rotates at 500."""
         try:
             raise RuntimeError("boom detail")
         except RuntimeError as exc:
@@ -406,6 +432,7 @@ class CoreEndpointTests(unittest.TestCase):
         self.assertEqual(len(list(self.server.EXCEPTION_LOG_DIR.glob("*.json"))), 450)
 
     def test_rag_audit_rotation_keeps_up_to_500_files(self):
+        """Function for test rag audit rotation keeps up to 500 files."""
         self.server.RAG_AUDIT_DIR.mkdir(parents=True, exist_ok=True)
         for index in range(499):
             path = self.server.RAG_AUDIT_DIR / f"suspicious_rag_{index:04d}.json"
@@ -420,10 +447,13 @@ class CoreEndpointTests(unittest.TestCase):
         self.assertEqual(len(list(self.server.RAG_AUDIT_DIR.glob("*.json"))), 450)
 
     def test_chat_stream_uses_model_stream_and_persists_final_reply(self):
+        """Function for test chat stream uses model stream and persists final reply."""
         def fake_resolve_model(selection):
+            """Resolve any fake model selection for tests."""
             return {"id": selection, "provider": "fake", "model": selection}
 
         async def fake_generate_ai_reply(_model, messages):
+            """Return deterministic fake model output for tests."""
             if "Return ONLY valid JSON" in messages[-1].content:
                 return json.dumps(
                     {
@@ -437,6 +467,7 @@ class CoreEndpointTests(unittest.TestCase):
             return "non-stream fallback"
 
         async def fake_generate_ai_reply_stream(_model, _messages):
+            """Yield deterministic fake streaming model output for tests."""
             yield "[RAG]\nHello"
             yield " from"
             yield " streaming."
@@ -491,9 +522,11 @@ class CoreEndpointTests(unittest.TestCase):
             self.server.generate_ai_reply_stream = original_stream
 
     def test_langchain_missing_dependency_returns_clear_error(self):
+        """Function for test langchain missing dependency returns clear error."""
         original_import = self.server.__builtins__["__import__"]
 
         def fake_import(name, *args, **kwargs):
+            """Raise a controlled import error for LangChain dependency tests."""
             if name == "langchain_core.messages":
                 raise ImportError("mock missing langchain")
             return original_import(name, *args, **kwargs)

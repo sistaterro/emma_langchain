@@ -170,6 +170,7 @@ Practical rule:
 - Prefer pragmatic solutions over overengineering.
 - Prefer small cohesive modules for future expansion. `server.py` is currently functional but large.
 - If a change can be isolated in a helper function or module, do it.
+- All Python classes, functions, and async functions should include concise docstrings. New implementations must add or update docstrings as part of the same change so the code remains easy to scan and onboard.
 - If a text or rule is hard to locate, move it to a canonical place.
 - Keep names consistent with the current domain: `global`, `mine`, `owner_id`, `role`, `is_active`, and so on.
 - Do not introduce empty abstractions such as managers or state-less classes if simple functions are enough.

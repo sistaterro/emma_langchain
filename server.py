@@ -24,6 +24,7 @@ from prompts import build_inconsistency_prompt, build_rag_prompt, build_safety_p
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    """Initialize local runtime state when the FastAPI app starts."""
     initialize_runtime()
     yield
 
@@ -40,6 +41,7 @@ app.add_middleware(
 
 @app.middleware("http")
 async def log_unhandled_http_exceptions(request, call_next):
+    """Persist unexpected HTTP exceptions and disable HTML caching."""
     try:
         response = await call_next(request)
         if request.url.path.startswith("/ui/") and request.url.path.endswith(".html"):
@@ -126,11 +128,13 @@ MODEL_CATALOG = [
 
 
 class LoginRequest(BaseModel):
+    """Request body for username/password login."""
     username: str
     password: str
 
 
 class AdminUserCreate(BaseModel):
+    """Request body for creating an admin-managed user."""
     username: str
     password: str
     full_name: Optional[str] = None
@@ -138,30 +142,36 @@ class AdminUserCreate(BaseModel):
 
 
 class AdminUserUpdate(BaseModel):
+    """Request body for updating admin-managed user fields."""
     full_name: Optional[str] = None
     role: Optional[str] = None
     is_active: Optional[bool] = None
 
 
 class AdminPasswordReset(BaseModel):
+    """Request body for an admin password reset."""
     password: str
 
 
 class ConversationCreate(BaseModel):
+    """Request body for creating a conversation."""
     title: str = "New chat"
     model: str
 
 
 class ConversationTitleUpdate(BaseModel):
+    """Request body for renaming a conversation."""
     title: str
 
 
 class Message(BaseModel):
+    """Chat message exchanged between the UI and backend."""
     role: str
     content: str
 
 
 class ChatRequest(BaseModel):
+    """Request body for chat generation."""
     model: str
     messages: List[Message]
     stream: bool = True
@@ -170,14 +180,17 @@ class ChatRequest(BaseModel):
 
 
 def hash_password(password: str) -> str:
+    """Hash a plaintext password for SQLite storage."""
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
 def verify_password(password: str, hashed: str) -> bool:
+    """Check a plaintext password against a stored bcrypt hash."""
     return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
 def get_db():
+    """Open a SQLite connection configured for Emma's schema."""
     conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -185,6 +198,7 @@ def get_db():
 
 
 def normalize_role(role: str) -> str:
+    """Normalize and validate a user role string."""
     normalized = str(role or "").strip().lower().replace("-", "_").replace(" ", "_")
     if normalized == "readonly":
         normalized = "read_only"
@@ -194,12 +208,14 @@ def normalize_role(role: str) -> str:
 
 
 def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    """Add a SQLite table column if it is missing."""
     columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def init_db() -> None:
+    """Create or migrate the local SQLite schema and bootstrap the admin user."""
     conn = get_db()
     conn.execute(
         """
@@ -267,16 +283,19 @@ def init_db() -> None:
 
 
 def require_admin(user: dict) -> None:
+    """Reject the request unless the current user is an admin."""
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Only admins can perform this action")
 
 
 def require_upload_access(user: dict) -> None:
+    """Reject users who are not allowed to manage RAG files."""
     if user["role"] == "read_only":
         raise HTTPException(status_code=403, detail="Your user cannot manage files")
 
 
 def get_user_row(user_id: int) -> sqlite3.Row | None:
+    """Fetch a user row by id."""
     conn = get_db()
     row = conn.execute(
         "SELECT id, username, full_name, role, is_active, created_at, last_login_at "
@@ -288,6 +307,7 @@ def get_user_row(user_id: int) -> sqlite3.Row | None:
 
 
 def serialize_user_row(row: sqlite3.Row) -> dict:
+    """Convert a SQLite user row into an API response dictionary."""
     return {
         "id": row["id"],
         "username": row["username"],
@@ -305,6 +325,7 @@ def ensure_admin_survives(
     new_is_active: bool | None = None,
     deleting: bool = False,
 ) -> None:
+    """Prevent operations that would remove the last active admin."""
     row = get_user_row(target_user_id)
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
@@ -329,18 +350,21 @@ def ensure_admin_survives(
 
 
 def user_files_dir(user_id: int) -> Path:
+    """Return and create the per-user source-file directory."""
     path = FILES_ROOT / str(user_id)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def user_chunks_dir(user_id: int) -> Path:
+    """Return and create the per-user chunk directory."""
     path = CHUNKS_ROOT / str(user_id)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def resolve_target_user_id(user: dict, owner_id: Optional[int]) -> int:
+    """Resolve which user's files an upload or admin action targets."""
     if user["role"] == "admin" and owner_id is not None:
         if not get_user_row(owner_id):
             raise HTTPException(status_code=404, detail="User not found")
@@ -351,6 +375,7 @@ def resolve_target_user_id(user: dict, owner_id: Optional[int]) -> int:
 
 
 def load_files_index(base_dir: Path) -> dict:
+    """Load the human-readable file description index for a directory."""
     idx_path = base_dir / "files_index.json"
     if not idx_path.exists():
         return {}
@@ -362,6 +387,7 @@ def load_files_index(base_dir: Path) -> dict:
 
 
 def prune_index_entries(base_dir: Path, filename: str) -> dict:
+    """Remove file-index and conflict entries for a deleted RAG stem."""
     idx_path = base_dir / filename
     if not idx_path.exists():
         return {}
@@ -379,6 +405,7 @@ def prune_index_entries(base_dir: Path, filename: str) -> dict:
 
 
 def save_description_to_index(base_dir: Path, stem: str, description: str) -> None:
+    """Persist a short description for an indexed RAG file."""
     if not (base_dir / f"{stem}.txt").exists():
         return
     idx_path = base_dir / "files_index.json"
@@ -388,6 +415,7 @@ def save_description_to_index(base_dir: Path, stem: str, description: str) -> No
 
 
 async def assess_rag_prompt_injection(text: str, file_name: str = "rag.txt", model: dict | None = None) -> dict:
+    """Run model-based prompt-injection screening for a RAG document."""
     return await rag_security.assess_rag_prompt_injection(
         text,
         file_name,
@@ -399,10 +427,12 @@ async def assess_rag_prompt_injection(text: str, file_name: str = "rag.txt", mod
 
 
 def save_security_to_index(base_dir: Path, stem: str, assessment: dict) -> None:
+    """Persist a RAG security assessment next to the source files."""
     rag_security.save_security_to_index(base_dir, stem, assessment)
 
 
 def security_response(record: dict | None, status: str = "unchecked") -> dict:
+    """Return a frontend-safe representation of a security record."""
     return rag_security.security_response(record, status)
 
 
@@ -412,6 +442,7 @@ async def get_or_create_rag_security_record(
     owner_id: int | None,
     model: dict | None = None,
 ) -> dict:
+    """Load or lazily create the security record for a RAG file."""
     return await rag_security.get_or_create_rag_security_record(
         txt_path,
         scope,
@@ -426,10 +457,12 @@ async def get_or_create_rag_security_record(
 
 
 def is_high_risk_rag_security(record: dict | None) -> bool:
+    """Return whether a RAG security record must be excluded from chat."""
     return rag_security.is_high_risk_rag_security(record)
 
 
 async def should_exclude_rag_from_chat(txt_path: Path, scope: str, owner_id: int | None, model: dict | None) -> bool:
+    """Return whether a RAG file should be withheld from chat context."""
     return await rag_security.should_exclude_rag_from_chat(
         txt_path,
         scope,
@@ -444,6 +477,7 @@ async def should_exclude_rag_from_chat(txt_path: Path, scope: str, owner_id: int
 
 
 def rotate_rag_audit_logs(max_files: int = 500, delete_count: int = 50) -> None:
+    """Keep the suspicious RAG audit directory within its retention limit."""
     rag_security.rotate_rag_audit_logs(RAG_AUDIT_DIR, max_files, delete_count)
 
 
@@ -453,6 +487,7 @@ def build_rag_audit_record(
     owner_id: int | None,
     assessment: dict,
 ) -> dict:
+    """Build a JSON-serializable suspicious RAG audit record."""
     return rag_security.build_rag_audit_record(txt_path, scope, owner_id, assessment)
 
 
@@ -462,10 +497,12 @@ def persist_suspicious_rag_audit_log(
     owner_id: int | None,
     assessment: dict,
 ) -> None:
+    """Write an audit log for a suspicious RAG assessment."""
     rag_security.persist_suspicious_rag_audit_log(RAG_AUDIT_DIR, txt_path, scope, owner_id, assessment)
 
 
 def rotate_exception_logs(max_files: int = 500, delete_count: int = 50) -> None:
+    """Keep exception logs within the retention limit."""
     try:
         files = sorted(EXCEPTION_LOG_DIR.glob("*.json"), key=lambda path: path.stat().st_mtime)
         if len(files) < max_files:
@@ -477,6 +514,7 @@ def rotate_exception_logs(max_files: int = 500, delete_count: int = 50) -> None:
 
 
 def build_exception_log_record(exc: BaseException, context: dict | None = None) -> dict:
+    """Build a JSON-serializable exception log record."""
     return {
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "audit_type": "exception",
@@ -496,6 +534,7 @@ def build_exception_log_record(exc: BaseException, context: dict | None = None) 
 
 
 def persist_exception_log(exc: BaseException, context: dict | None = None) -> None:
+    """Persist details for an unexpected backend exception."""
     try:
         EXCEPTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
         rotate_exception_logs()
@@ -509,10 +548,12 @@ def persist_exception_log(exc: BaseException, context: dict | None = None) -> No
 
 
 def load_conflicts_index(base_dir: Path) -> dict:
+    """Load persisted RAG conflict results for a directory."""
     return prune_index_entries(base_dir, "conflicts_index.json")
 
 
 def conflicts_response(record: dict | None, status: str = "unchecked") -> dict:
+    """Return a frontend-safe representation of a conflict record."""
     if not isinstance(record, dict):
         return {"has_any": False, "matches": [], "status": status}
     matches = record.get("matches") if isinstance(record.get("matches"), list) else []
@@ -527,6 +568,7 @@ def conflicts_response(record: dict | None, status: str = "unchecked") -> dict:
 
 
 def conflict_match_still_exists(base_dir: Path, match: dict) -> bool:
+    """Check whether a persisted conflict match still points to an existing RAG."""
     if not isinstance(match, dict):
         return False
     name = str(match.get("name") or "").strip()
@@ -539,6 +581,7 @@ def conflict_match_still_exists(base_dir: Path, match: dict) -> bool:
 
 
 def prune_orphaned_conflict_matches(base_dir: Path) -> dict:
+    """Remove conflict records that reference deleted RAG files."""
     idx_path = base_dir / "conflicts_index.json"
     index = load_conflicts_index(base_dir)
     changed = False
@@ -563,6 +606,7 @@ def prune_orphaned_conflict_matches(base_dir: Path) -> dict:
 
 
 def save_conflicts_to_index(base_dir: Path, stem: str, conflicts: dict) -> None:
+    """Persist detected conflict results for a RAG file."""
     idx_path = base_dir / "conflicts_index.json"
     index = load_conflicts_index(base_dir)
     index[stem] = {
@@ -575,6 +619,7 @@ def save_conflicts_to_index(base_dir: Path, stem: str, conflicts: dict) -> None:
 
 
 def normalize_document_text(text: str) -> str:
+    """Normalize uploaded document text before chunking."""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -582,6 +627,7 @@ def normalize_document_text(text: str) -> str:
 
 
 def is_quality_chunk(text: str) -> bool:
+    """Return whether text is useful enough to keep as a chunk."""
     stripped = text.strip()
     if len(stripped) < 80:
         return False
@@ -593,6 +639,7 @@ def is_quality_chunk(text: str) -> bool:
 
 
 def split_long_chunk(text: str, max_chars: int = CHUNK_MAX_CHARS) -> list[str]:
+    """Split an oversized text chunk into bounded pieces."""
     if len(text) <= max_chars:
         return [text]
     parts = []
@@ -613,6 +660,7 @@ def split_long_chunk(text: str, max_chars: int = CHUNK_MAX_CHARS) -> list[str]:
 
 
 def chunk_text(text: str, min_words: int = CHUNK_MIN_WORDS) -> list[str]:
+    """Split normalized document text into quality RAG chunks."""
     paragraphs = re.split(r"\n\s*\n", normalize_document_text(text))
     chunks = []
     buffer = ""
@@ -634,6 +682,7 @@ def chunk_text(text: str, min_words: int = CHUNK_MIN_WORDS) -> list[str]:
 
 
 def load_chunk_file(chunks_dir: Path, stem: str) -> list[dict]:
+    """Load stored chunks for a RAG stem."""
     json_path = chunks_dir / f"{stem}.json"
     if not json_path.exists():
         return []
@@ -646,6 +695,7 @@ def load_chunk_file(chunks_dir: Path, stem: str) -> list[dict]:
 
 
 def build_excerpt_from_chunk_dicts(chunks: list[dict], max_chars: int = 5000) -> str:
+    """Build a bounded excerpt from stored chunk dictionaries."""
     parts = []
     total = 0
     for chunk in chunks:
@@ -662,10 +712,12 @@ def build_excerpt_from_chunk_dicts(chunks: list[dict], max_chars: int = 5000) ->
 
 
 def tokenize_for_overlap(text: str) -> set[str]:
+    """Tokenize text for lightweight lexical-overlap scoring."""
     return {token for token in re.findall(r"\b\w+\b", text.lower()) if len(token) >= 3}
 
 
 def lexical_overlap_score(a: str, b: str) -> float:
+    """Calculate a simple overlap score between two texts."""
     a_tokens = tokenize_for_overlap(a)
     b_tokens = tokenize_for_overlap(b)
     if not a_tokens or not b_tokens:
@@ -674,6 +726,7 @@ def lexical_overlap_score(a: str, b: str) -> float:
 
 
 def extract_json_object(text: str) -> dict | None:
+    """Extract a JSON object from a model response when possible."""
     if not text:
         return None
     text = text.strip()
@@ -692,6 +745,7 @@ def extract_json_object(text: str) -> dict | None:
 
 
 def keep_inconsistency_item(item: dict) -> bool:
+    """Return whether a model-reported inconsistency is strong enough to keep."""
     combined = " ".join(
         str(item.get(key, ""))
         for key in ("topic", "new_claim", "existing_claim")
@@ -715,6 +769,7 @@ async def compare_documents_for_inconsistencies(
     candidate_scope: str,
     candidate_excerpt: str,
 ) -> dict | None:
+    """Compare a new RAG against one visible candidate document."""
     models = available_models()
     if not models:
         return None
@@ -763,6 +818,7 @@ async def compare_documents_for_inconsistencies(
 
 
 def visible_rag_candidates(user: dict, current_scope: str, current_stem: str) -> list[dict]:
+    """List existing RAGs visible during conflict detection."""
     candidates = []
     global_index = load_files_index(GLOBAL_FILES_DIR)
     for txt_path in sorted(GLOBAL_FILES_DIR.glob("*.txt")):
@@ -799,6 +855,7 @@ def visible_rag_candidates(user: dict, current_scope: str, current_stem: str) ->
 
 
 async def visible_chat_chunk_sources(user: dict, model: dict | None = None) -> list[dict]:
+    """List visible safe RAG chunk sources for a chat user."""
     sources = []
     for txt_path in sorted(GLOBAL_FILES_DIR.glob("*.txt")):
         if await should_exclude_rag_from_chat(txt_path, "global", None, model):
@@ -828,6 +885,7 @@ async def visible_chat_chunk_sources(user: dict, model: dict | None = None) -> l
 
 
 async def load_visible_context_chunks(user: dict, model: dict | None = None) -> list[dict]:
+    """Load all visible safe chunks for chat prompt construction."""
     context_chunks = []
     for source in await visible_chat_chunk_sources(user, model):
         for chunk in load_chunk_file(source["chunks_dir"], source["stem"]):
@@ -846,6 +904,7 @@ async def load_visible_context_chunks(user: dict, model: dict | None = None) -> 
 
 
 def build_chat_messages_with_all_visible_chunks(req: ChatRequest, user: dict, context_chunks: list[dict] | None = None) -> list[Message]:
+    """Build chat messages with the full visible safe RAG context."""
     if not req.messages:
         raise HTTPException(status_code=400, detail="No messages to answer")
     question = req.messages[-1].content.strip()
@@ -870,6 +929,7 @@ async def detect_rag_inconsistencies(
     user: dict,
     max_candidates: int = 3,
 ) -> dict:
+    """Detect and persist contradictions for a newly indexed RAG."""
     new_excerpt = build_excerpt_from_chunk_dicts(new_chunks)
     if not new_excerpt:
         return {"has_any": False, "matches": []}
@@ -917,6 +977,7 @@ async def check_existing_rag_conflicts(
     owner_id: int | None,
     user: dict,
 ) -> None:
+    """Run a deferred conflict check for an existing RAG."""
     if not txt_path.exists():
         return
     chunks = load_chunk_file(chunks_dir, txt_path.stem)
@@ -938,12 +999,14 @@ def schedule_existing_conflict_check(
     owner_id: int | None,
     user: dict,
 ) -> None:
+    """Schedule a background conflict check if one is not already running."""
     key = f"{scope}:{owner_id or 'global'}:{txt_path.stem}"
     if key in CONFLICT_CHECK_TASKS:
         return
     CONFLICT_CHECK_TASKS.add(key)
 
     async def runner():
+        """Function for runner."""
         try:
             await check_existing_rag_conflicts(txt_path, chunks_dir, scope, owner_id, user)
         except Exception as exc:
@@ -964,6 +1027,7 @@ def schedule_existing_conflict_check(
 
 
 def build_document_description(text: str, max_chars: int = 260) -> str:
+    """Create a compact display description for a document."""
     cleaned = re.sub(r"\s+", " ", normalize_document_text(text))
     if len(cleaned) <= max_chars:
         return cleaned
@@ -977,6 +1041,7 @@ async def process_rag_file(
     owner_id: int | None = None,
     user: dict | None = None,
 ) -> None:
+    """Chunk, index, screen, audit, and compare an uploaded RAG file."""
     chunks_dir.mkdir(parents=True, exist_ok=True)
     if not txt_path.exists():
         return
@@ -1038,7 +1103,9 @@ def schedule_rag_processing(
     owner_id: int | None,
     user: dict,
 ) -> None:
+    """Schedule background processing for a RAG file."""
     async def runner():
+        """Function for runner."""
         try:
             await process_rag_file(txt_path, chunks_dir, scope, owner_id, user)
         except Exception as exc:
@@ -1057,6 +1124,7 @@ def schedule_rag_processing(
 
 
 def read_key_file(path: Path, *names: str) -> str | None:
+    """Read the first available provider key from legacy key files."""
     if not path.exists():
         return None
     for raw_line in path.read_text(encoding="utf-8").splitlines():
@@ -1073,6 +1141,7 @@ def read_key_file(path: Path, *names: str) -> str | None:
 
 
 def read_api_keys_json(provider: str, *names: str) -> str | None:
+    """Read a provider API key from api_keys.json."""
     if not API_KEYS_PATH.exists():
         return None
     try:
@@ -1091,6 +1160,7 @@ def read_api_keys_json(provider: str, *names: str) -> str | None:
 
 
 def get_provider_key(provider: str) -> str | None:
+    """Resolve a provider API key from JSON, environment, or legacy files."""
     provider = provider.lower()
     env_names = {
         "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
@@ -1111,6 +1181,7 @@ def get_provider_key(provider: str) -> str | None:
 
 
 def available_models() -> list[dict]:
+    """Return model catalog entries whose providers have configured keys."""
     return [
         model
         for model in MODEL_CATALOG
@@ -1119,6 +1190,7 @@ def available_models() -> list[dict]:
 
 
 def resolve_model(selection: str) -> dict:
+    """Resolve a requested model id into a catalog entry."""
     for model in MODEL_CATALOG:
         if selection in {model["id"], model["model"], model["label"]}:
             if not get_provider_key(model["provider"]):
@@ -1131,6 +1203,7 @@ def resolve_model(selection: str) -> dict:
 
 
 def to_langchain_messages(messages: list[Message]) -> list:
+    """Convert Emma messages into LangChain message objects."""
     try:
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
     except ImportError:
@@ -1152,6 +1225,7 @@ def to_langchain_messages(messages: list[Message]) -> list:
 
 
 def make_langchain_chat_model(model: dict):
+    """Instantiate the configured LangChain chat model."""
     provider = model["provider"]
     key = get_provider_key(provider)
     if not key:
@@ -1192,6 +1266,7 @@ def make_langchain_chat_model(model: dict):
 
 
 def langchain_response_text(response, *, strip: bool = True) -> str:
+    """Extract text content from a LangChain response object."""
     content = getattr(response, "content", response)
     if isinstance(content, str):
         return content.strip() if strip else content
@@ -1209,12 +1284,14 @@ def langchain_response_text(response, *, strip: bool = True) -> str:
 
 
 async def generate_ai_reply(model: dict, messages: list[Message]) -> str:
+    """Generate a non-streaming reply through the selected LangChain model."""
     chat_model = make_langchain_chat_model(model)
     response = await chat_model.ainvoke(to_langchain_messages(messages))
     return langchain_response_text(response)
 
 
 async def generate_ai_reply_stream(model: dict, messages: list[Message]):
+    """Stream reply text from the selected LangChain model."""
     chat_model = make_langchain_chat_model(model)
     async for chunk in chat_model.astream(to_langchain_messages(messages)):
         piece = langchain_response_text(chunk, strip=False)
@@ -1224,6 +1301,7 @@ async def generate_ai_reply_stream(model: dict, messages: list[Message]):
 
 
 def default_safety_assessment() -> dict:
+    """Return the default safe chat-manipulation assessment."""
     return {
         "label": "SAFE",
         "confidence": 0.0,
@@ -1234,6 +1312,7 @@ def default_safety_assessment() -> dict:
 
 
 def normalize_safety_assessment(data: dict | None) -> dict:
+    """Normalize model output into the chat safety schema."""
     default = default_safety_assessment()
     if not isinstance(data, dict):
         return default
@@ -1262,6 +1341,7 @@ def normalize_safety_assessment(data: dict | None) -> dict:
 
 
 async def analyze_user_message_safety(message: str, model: dict) -> dict:
+    """Analyze a user message for manipulation or policy-bypass risk."""
     if not message.strip():
         return default_safety_assessment()
     prompt = build_safety_prompt(message)
@@ -1276,10 +1356,12 @@ async def analyze_user_message_safety(message: str, model: dict) -> dict:
 
 
 def should_persist_chat_audit(safety: dict) -> bool:
+    """Return whether a safety assessment should be audit-logged."""
     return safety.get("label") in {"REVIEW", "SUSPICIOUS"}
 
 
 def rotate_chat_audit_logs(max_files: int = 500, delete_count: int = 50) -> None:
+    """Keep chat audit logs within the retention limit."""
     try:
         files = sorted(LOGS_DIR.glob("*.json"), key=lambda path: path.stat().st_mtime)
         if len(files) < max_files:
@@ -1291,6 +1373,7 @@ def rotate_chat_audit_logs(max_files: int = 500, delete_count: int = 50) -> None
 
 
 def persist_suspicious_chat_audit_log(record: dict) -> None:
+    """Persist a suspicious chat audit record."""
     if not should_persist_chat_audit(record.get("safety", {})):
         return
     try:
@@ -1311,6 +1394,7 @@ def build_chat_audit_record(
     safety: dict,
     context_chunks: list[dict],
 ) -> dict:
+    """Build a JSON-serializable suspicious chat audit record."""
     sources = sorted({str(chunk.get("source", "unknown")).split("#", 1)[0] for chunk in context_chunks})
     return {
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -1331,6 +1415,7 @@ def build_chat_audit_record(
     }
 
 def store_chat_messages(conversation_id: str | None, user_id: int, messages: list[Message], reply: str) -> None:
+    """Persist a user turn and assistant reply in a conversation."""
     if not conversation_id:
         return
     conn = get_db()
@@ -1361,6 +1446,7 @@ def store_chat_messages(conversation_id: str | None, user_id: int, messages: lis
 
 
 def response_tag(text: str) -> str | None:
+    """Extract Emma's leading grounding tag from a response."""
     stripped = text.strip()
     for tag in ("[RAG]", "[DRIFT]", "[NO INFO]"):
         if stripped.startswith(tag):
@@ -1375,6 +1461,7 @@ async def stream_chat_as_json_lines(
     user: dict,
     audit_record: dict,
 ):
+    """Stream chat chunks as newline-delimited JSON and persist the final reply."""
     reply_parts = []
     async for piece in generate_ai_reply_stream(model, messages):
         reply_parts.append(piece)
@@ -1400,6 +1487,7 @@ def append_file_entries(
     conflict_user: dict | None = None,
     schedule_missing_conflicts: bool = False,
 ) -> None:
+    """Append file metadata entries for the files endpoint response."""
     index = prune_index_entries(files_dir, "files_index.json")
     conflicts = prune_index_entries(files_dir, "conflicts_index.json")
     security = prune_index_entries(files_dir, "security_index.json")
@@ -1447,6 +1535,7 @@ def append_file_entries(
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ):
+    """Resolve the bearer token into an active current user."""
     if not credentials:
         raise HTTPException(status_code=401, detail="Not authenticated")
     conn = get_db()
@@ -1470,12 +1559,14 @@ async def get_current_user(
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
+    """Serve Emma's favicon."""
     if not FAVICON_PATH.exists():
         raise HTTPException(status_code=404, detail="Favicon not found")
     return FileResponse(path=str(FAVICON_PATH), media_type="image/svg+xml")
 
 
 def initialize_runtime():
+    """Create runtime directories and initialize the database."""
     init_db()
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     RAG_AUDIT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1486,6 +1577,7 @@ def initialize_runtime():
 
 @app.post("/auth/login")
 async def login(body: LoginRequest):
+    """Authenticate a test user and return its token."""
     conn = get_db()
     row = conn.execute(
         "SELECT id, username, password_hash, role, full_name, is_active FROM users WHERE username = ?",
@@ -1523,6 +1615,7 @@ async def logout(
     user: dict = Depends(get_current_user),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ):
+    """Delete the current bearer session token."""
     if credentials:
         conn = get_db()
         conn.execute("DELETE FROM sessions WHERE token = ?", (credentials.credentials,))
@@ -1533,6 +1626,7 @@ async def logout(
 
 @app.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
+    """Return the current authenticated user's profile."""
     return {
         "id": user["id"],
         "username": user["username"],
@@ -1543,6 +1637,7 @@ async def me(user: dict = Depends(get_current_user)):
 
 @app.get("/admin/users")
 async def admin_list_users(user: dict = Depends(get_current_user)):
+    """Return all users for the admin panel."""
     require_admin(user)
     conn = get_db()
     rows = conn.execute(
@@ -1558,6 +1653,7 @@ async def admin_create_user(
     body: AdminUserCreate,
     user: dict = Depends(get_current_user),
 ):
+    """Create a user from the admin panel."""
     require_admin(user)
     username = body.username.strip()
     password = body.password.strip()
@@ -1594,6 +1690,7 @@ async def admin_update_user(
     body: AdminUserUpdate,
     user: dict = Depends(get_current_user),
 ):
+    """Update an existing user from the admin panel."""
     require_admin(user)
     row = get_user_row(target_user_id)
     if not row:
@@ -1635,6 +1732,7 @@ async def admin_reset_password(
     body: AdminPasswordReset,
     user: dict = Depends(get_current_user),
 ):
+    """Reset a user's password from the admin panel."""
     require_admin(user)
     if len(body.password.strip()) < 4:
         raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
@@ -1656,6 +1754,7 @@ async def admin_delete_user(
     target_user_id: int,
     user: dict = Depends(get_current_user),
 ):
+    """Delete a user and their owned runtime files."""
     require_admin(user)
     if target_user_id == user["id"]:
         raise HTTPException(status_code=400, detail="You cannot delete your own user")
@@ -1679,6 +1778,7 @@ async def admin_delete_user(
 
 @app.get("/health")
 async def health(user: dict = Depends(get_current_user)):
+    """Return provider/model availability without exposing secrets."""
     models = available_models()
     return {
         "status": "ok",
@@ -1689,6 +1789,7 @@ async def health(user: dict = Depends(get_current_user)):
 
 @app.get("/files")
 async def list_files(user: dict = Depends(get_current_user)):
+    """Return visible RAG files with indexing, conflict, and security state."""
     result = []
     append_file_entries(
         result,
@@ -1742,6 +1843,7 @@ async def upload_file(
     owner_id: Optional[int] = Query(default=None),
     user: dict = Depends(get_current_user),
 ):
+    """Store an uploaded text RAG and schedule processing."""
     require_upload_access(user)
     if not file.filename or not file.filename.endswith(".txt"):
         raise HTTPException(status_code=400, detail="Only .txt files are accepted")
@@ -1791,6 +1893,7 @@ async def delete_file(
     owner_id: Optional[int] = Query(default=None),
     user: dict = Depends(get_current_user),
 ):
+    """Delete one visible RAG and prune its derived state."""
     require_upload_access(user)
     if scope == "global":
         if user["role"] != "admin":
@@ -1831,6 +1934,7 @@ async def delete_all_files(
     owner_id: Optional[int] = Query(default=None),
     user: dict = Depends(get_current_user),
 ):
+    """Delete all RAGs in an allowed scope."""
     require_upload_access(user)
     if scope == "global":
         if user["role"] != "admin":
@@ -1864,6 +1968,7 @@ async def download_file(
     owner_id: Optional[int] = Query(default=None),
     user: dict = Depends(get_current_user),
 ):
+    """Download a visible source RAG text file."""
     require_upload_access(user)
     if scope == "global":
         if user["role"] != "admin":
@@ -1881,6 +1986,7 @@ async def download_file(
 
 @app.get("/conversations")
 async def list_conversations(user: dict = Depends(get_current_user)):
+    """List conversations owned by the current user."""
     conn = get_db()
     rows = conn.execute(
         "SELECT id, title, model, created_at, updated_at FROM conversations "
@@ -1896,6 +2002,7 @@ async def create_conversation(
     body: ConversationCreate,
     user: dict = Depends(get_current_user),
 ):
+    """Create a conversation for the current user."""
     conv_id = secrets.token_urlsafe(12)
     now = datetime.utcnow().isoformat()
     conn = get_db()
@@ -1920,6 +2027,7 @@ async def get_conversation(
     conv_id: str,
     user: dict = Depends(get_current_user),
 ):
+    """Return a conversation and its messages."""
     conn = get_db()
     conv = conn.execute(
         "SELECT id, title, model, created_at, updated_at FROM conversations "
@@ -1944,6 +2052,7 @@ async def update_conversation_title(
     body: ConversationTitleUpdate,
     user: dict = Depends(get_current_user),
 ):
+    """Rename a conversation owned by the current user."""
     conn = get_db()
     row = conn.execute(
         "SELECT id FROM conversations WHERE id = ? AND user_id = ?",
@@ -1967,6 +2076,7 @@ async def delete_conversation(
     conv_id: str,
     user: dict = Depends(get_current_user),
 ):
+    """Delete a conversation owned by the current user."""
     conn = get_db()
     row = conn.execute(
         "SELECT id FROM conversations WHERE id = ? AND user_id = ?",
@@ -1987,6 +2097,7 @@ async def chat(
     req: ChatRequest,
     user: dict = Depends(get_current_user),
 ):
+    """Generate or stream a model reply for a chat request."""
     model = resolve_model(req.model)
     if not req.messages:
         raise HTTPException(status_code=400, detail="No messages to answer")

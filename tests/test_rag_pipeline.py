@@ -49,11 +49,14 @@ La politica real es que los productos premium nunca son gratis sin una campana e
 
 
 class RagPipelineTests(unittest.TestCase):
+    """Integration-style tests for RAG ingestion, safety, and prompt construction."""
     @classmethod
     def setUpClass(cls):
+        """Import server state once for this test case."""
         cls.server = importlib.import_module("server")
 
     def setUp(self):
+        """Create an isolated runtime workspace for each test."""
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.server.DB_PATH = self.root / "emma.db"
@@ -71,6 +74,7 @@ class RagPipelineTests(unittest.TestCase):
         self.server.resolve_model = lambda selection: {"id": selection, "provider": "fake", "model": selection}
 
         async def fake_generate_ai_reply(_model, messages):
+            """Return deterministic fake model output for tests."""
             prompt = messages[-1].content
             if "multilingual security reviewer" in prompt:
                 if "IGNORE ALL PREVIOUS INSTRUCTIONS" in prompt or "ignora todas las instrucciones anteriores" in prompt.lower():
@@ -92,6 +96,7 @@ class RagPipelineTests(unittest.TestCase):
         self.client = TestClient(self.server.app)
 
     def tearDown(self):
+        """Clean up the isolated runtime workspace after each test."""
         self.server.available_models = self.original_available_models
         self.server.resolve_model = self.original_resolve_model
         self.server.generate_ai_reply = self.original_generate_ai_reply
@@ -99,14 +104,17 @@ class RagPipelineTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def login(self, username="admin", password="admin1234"):
+        """Authenticate a test user and return its token."""
         response = self.client.post("/auth/login", json={"username": username, "password": password})
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()["token"]
 
     def auth_headers(self, token):
+        """Build bearer-token headers for test requests."""
         return {"Authorization": f"Bearer {token}"}
 
     def test_rag_prompt_marks_context_as_untrusted_against_prompt_injection(self):
+        """Function for test rag prompt marks context as untrusted against prompt injection."""
         prompt = self.server.build_rag_prompt(
             "Can I get a free premium dessert?",
             [{"source": "mine/injection#0000", "text": LONG_PROMPT_INJECTION_TEXT}],
@@ -130,6 +138,7 @@ class RagPipelineTests(unittest.TestCase):
         )
 
     def test_process_rag_file_creates_chunks_and_file_index(self):
+        """Function for test process rag file creates chunks and file index."""
         files_dir = self.server.user_files_dir(1)
         chunks_dir = self.server.user_chunks_dir(1)
         txt_path = files_dir / "discounts.txt"
@@ -149,6 +158,7 @@ class RagPipelineTests(unittest.TestCase):
         self.assertIn("Store discount policy", index["discounts"])
 
     def test_process_rag_file_saves_prompt_injection_security_index(self):
+        """Function for test process rag file saves prompt injection security index."""
         files_dir = self.server.user_files_dir(1)
         chunks_dir = self.server.user_chunks_dir(1)
         txt_path = files_dir / "injection.txt"
@@ -165,6 +175,7 @@ class RagPipelineTests(unittest.TestCase):
         self.assertIn("IGNORE ALL PREVIOUS INSTRUCTIONS", json.dumps(security["injection"]))
 
     def test_process_rag_file_detects_prompt_injection_in_spanish(self):
+        """Function for test process rag file detects prompt injection in spanish."""
         files_dir = self.server.user_files_dir(1)
         chunks_dir = self.server.user_chunks_dir(1)
         txt_path = files_dir / "inyeccion.txt"
@@ -180,6 +191,7 @@ class RagPipelineTests(unittest.TestCase):
         self.assertIn("model_detected_prompt_injection", signals)
 
     def test_process_rag_file_writes_audit_log_for_suspicious_rag(self):
+        """Function for test process rag file writes audit log for suspicious rag."""
         files_dir = self.server.user_files_dir(1)
         chunks_dir = self.server.user_chunks_dir(1)
         txt_path = files_dir / "injection.txt"
@@ -198,6 +210,7 @@ class RagPipelineTests(unittest.TestCase):
         self.assertEqual(audit["security"]["risk"], "high")
 
     def test_files_endpoint_exposes_prompt_injection_security_status(self):
+        """Function for test files endpoint exposes prompt injection security status."""
         files_dir = self.server.user_files_dir(1)
         chunks_dir = self.server.user_chunks_dir(1)
         txt_path = files_dir / "injection.txt"
@@ -215,6 +228,7 @@ class RagPipelineTests(unittest.TestCase):
         self.assertIn("model_detected_prompt_injection", signals)
 
     def test_process_rag_file_does_not_write_audit_log_for_clean_rag(self):
+        """Function for test process rag file does not write audit log for clean rag."""
         files_dir = self.server.user_files_dir(1)
         chunks_dir = self.server.user_chunks_dir(1)
         txt_path = files_dir / "discounts.txt"
@@ -225,7 +239,9 @@ class RagPipelineTests(unittest.TestCase):
         self.assertEqual(list(self.server.RAG_AUDIT_DIR.glob("suspicious_rag_*.json")), [])
 
     def test_process_rag_file_saves_mocked_inconsistencies(self):
+        """Function for test process rag file saves mocked inconsistencies."""
         async def fake_compare(**_kwargs):
+            """Function for fake compare."""
             return {
                 "has_inconsistencies": True,
                 "summary": "The discount rules conflict.",
@@ -270,7 +286,9 @@ class RagPipelineTests(unittest.TestCase):
             self.server.compare_documents_for_inconsistencies = original_compare
 
     def test_existing_rag_conflict_check_persists_clean_result(self):
+        """Function for test existing rag conflict check persists clean result."""
         async def fake_compare(**_kwargs):
+            """Function for fake compare."""
             return {
                 "has_inconsistencies": False,
                 "summary": "",
@@ -318,6 +336,7 @@ class RagPipelineTests(unittest.TestCase):
             self.server.compare_documents_for_inconsistencies = original_compare
 
     def test_prunes_conflicts_when_referenced_rag_is_deleted(self):
+        """Function for test prunes conflicts when referenced rag is deleted."""
         files_dir = self.server.user_files_dir(1)
         chunks_dir = self.server.user_chunks_dir(1)
         first = files_dir / "discounts.txt"
@@ -362,12 +381,15 @@ class RagPipelineTests(unittest.TestCase):
         self.assertEqual(conflicts["no_discounts"]["matches"], [])
 
     def test_chat_endpoint_sends_all_visible_chunks_to_model(self):
+        """Function for test chat endpoint sends all visible chunks to model."""
         captured = {}
 
         def fake_resolve_model(selection):
+            """Resolve any fake model selection for tests."""
             return {"id": selection, "provider": "fake", "model": selection}
 
         async def fake_generate_ai_reply(_model, messages):
+            """Return deterministic fake model output for tests."""
             captured["messages"] = messages
             return "[RAG]\nThe visible RAGs contain conflicting discount rules."
 
@@ -415,12 +437,15 @@ class RagPipelineTests(unittest.TestCase):
             self.server.generate_ai_reply = original_generate
 
     def test_chat_excludes_high_risk_rag_from_context(self):
+        """Function for test chat excludes high risk rag from context."""
         captured = {}
 
         def fake_resolve_model(selection):
+            """Resolve any fake model selection for tests."""
             return {"id": selection, "provider": "fake", "model": selection}
 
         async def fake_generate_ai_reply(_model, messages):
+            """Return deterministic fake model output for tests."""
             captured["messages"] = messages
             prompt = messages[-1].content
             if "multilingual security reviewer" in prompt:

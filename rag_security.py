@@ -11,11 +11,13 @@ from prompts import build_rag_security_prompt
 
 @dataclass
 class SecurityMessage:
+    """Minimal message shape used by RAG security model calls."""
     role: str
     content: str
 
 
 def prune_security_index_entries(base_dir: Path) -> dict:
+    """Remove security-index entries whose source text files no longer exist."""
     idx_path = base_dir / "security_index.json"
     if not idx_path.exists():
         return {}
@@ -33,6 +35,7 @@ def prune_security_index_entries(base_dir: Path) -> dict:
 
 
 def extract_json_object(text: str) -> dict | None:
+    """Extract a JSON object from a model response when possible."""
     if not text:
         return None
     text = text.strip()
@@ -51,6 +54,7 @@ def extract_json_object(text: str) -> dict | None:
 
 
 def normalize_rag_security_assessment(parsed: dict | None, raw_reply: str = "") -> dict:
+    """Normalize raw model output into Emma's persisted RAG security schema."""
     if not isinstance(parsed, dict):
         return {
             "has_any": True,
@@ -110,6 +114,7 @@ def resolve_rag_security_model(
     available_models_func: Callable[[], list[dict]],
     resolve_model_func: Callable[[str], dict],
 ) -> dict | None:
+    """Choose the model used for RAG security checks."""
     if isinstance(model, dict):
         return model
     models = available_models_func()
@@ -126,6 +131,7 @@ async def assess_rag_prompt_injection(
     resolve_model_func: Callable[[str], dict],
     generate_ai_reply_func: Callable[[dict, list[SecurityMessage]], Awaitable[str]],
 ) -> dict:
+    """Run model-based prompt-injection screening for a RAG document."""
     security_model = resolve_rag_security_model(model, available_models_func, resolve_model_func)
     if security_model is None:
         return {
@@ -140,6 +146,7 @@ async def assess_rag_prompt_injection(
 
 
 def save_security_to_index(base_dir: Path, stem: str, assessment: dict) -> None:
+    """Persist a RAG security assessment next to the source files."""
     if not (base_dir / f"{stem}.txt").exists():
         return
     idx_path = base_dir / "security_index.json"
@@ -155,6 +162,7 @@ def save_security_to_index(base_dir: Path, stem: str, assessment: dict) -> None:
 
 
 def security_response(record: dict | None, status: str = "unchecked") -> dict:
+    """Return a frontend-safe representation of a security record."""
     if not isinstance(record, dict):
         return {"has_any": False, "risk": "none", "matches": [], "status": status}
     matches = record.get("matches") if isinstance(record.get("matches"), list) else []
@@ -170,11 +178,13 @@ def security_response(record: dict | None, status: str = "unchecked") -> dict:
 
 
 def is_high_risk_rag_security(record: dict | None) -> bool:
+    """Return whether a RAG security record must be excluded from chat."""
     security = security_response(record)
     return bool(security.get("has_any")) and security.get("risk") == "high"
 
 
 def rotate_rag_audit_logs(audit_dir: Path, max_files: int = 500, delete_count: int = 50) -> None:
+    """Keep the suspicious RAG audit directory within its retention limit."""
     try:
         files = sorted(audit_dir.glob("*.json"), key=lambda path: path.stat().st_mtime)
         if len(files) < max_files:
@@ -191,6 +201,7 @@ def build_rag_audit_record(
     owner_id: int | None,
     assessment: dict,
 ) -> dict:
+    """Build a JSON-serializable suspicious RAG audit record."""
     return {
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "audit_type": "suspicious_rag",
@@ -212,6 +223,7 @@ def persist_suspicious_rag_audit_log(
     owner_id: int | None,
     assessment: dict,
 ) -> None:
+    """Write an audit log for a suspicious RAG assessment."""
     if not assessment.get("has_any"):
         return
     try:
@@ -237,6 +249,7 @@ async def get_or_create_rag_security_record(
     generate_ai_reply_func: Callable[[dict, list[SecurityMessage]], Awaitable[str]],
     exception_logger: Callable[[BaseException, dict], None] | None = None,
 ) -> dict:
+    """Load or lazily create the security record for a RAG file."""
     files_dir = txt_path.parent
     security = prune_security_index_entries(files_dir)
     existing = security.get(txt_path.stem)
@@ -281,6 +294,7 @@ async def should_exclude_rag_from_chat(
     generate_ai_reply_func: Callable[[dict, list[SecurityMessage]], Awaitable[str]],
     exception_logger: Callable[[BaseException, dict], None] | None = None,
 ) -> bool:
+    """Return whether a RAG file should be withheld from chat context."""
     record = await get_or_create_rag_security_record(
         txt_path,
         scope,
