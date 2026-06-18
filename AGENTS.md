@@ -146,7 +146,7 @@ Recommended convention:
 
 Avoid prompt classes without real state.
 
-Current RAG strategy deliberately does not route to "probable" files or select top-k chunks. Chat loads all visible safe chunks and lets the selected model reason over that full visible context. RAGs marked with `security.risk == "high"` are excluded from chat context.
+Current RAG strategy deliberately does not route to "probable" files or select top-k chunks. Chat loads all visible safe chunks and lets the selected model reason over that full visible context. RAGs marked with `security.risk == "high"` are excluded from chat context. If no visible safe chunks are available, chat must not let the provider answer from general knowledge; the backend returns a deterministic `[NO INFO]` response instead.
 
 ### 4. Protect Visual State
 
@@ -183,6 +183,8 @@ Practical rule:
 - Missing RAG security records may be created lazily by chat using the currently selected chat model before chunks are allowed into context.
 - RAG security levels are `none`, `medium`, and `high`; treat `high` as dangerous for the system and `medium` as requiring review.
 - Chat must not use RAG chunks whose prompt-injection security result is `high`. `visible_chat_chunk_sources(...)` is responsible for filtering them out, and it creates a missing security assessment lazily before a RAG can be used.
+- Chat must return a backend-generated `[NO INFO]` response when no visible safe chunks are available. Do not call the provider for final answer content in that case; keep safety analysis and audit behavior intact.
+- If a provider omits the required leading response tag, the backend must add a conservative tag before returning or persisting the reply: `[NO INFO]` with no context, `[DRIFT]` with context.
 - `/files` is responsible for surfacing persisted conflict state and scheduling missing checks for indexed RAGs that have no conflict record yet.
 - `/files` also surfaces persisted `security` state for prompt-injection findings.
 - When deleting RAGs, prune both direct `conflicts_index.json` entries and orphaned `matches` that reference deleted files.
@@ -267,7 +269,7 @@ Current rebuild status:
 3. Conversation persistence: rebuilt.
 4. Provider/model selection: rebuilt using LangChain integrations.
 5. Upload, chunk ingestion, inconsistency detection, and RAG prompt-injection detection/auditing: rebuilt.
-6. Chat: rebuilt using all visible safe chunks instead of top-k retrieval, excludes high-risk RAGs from context, and supports real LangChain streaming for streamed requests.
+6. Chat: rebuilt using all visible safe chunks instead of top-k retrieval, excludes high-risk RAGs from context, returns backend-generated `[NO INFO]` when no safe context exists, enforces missing response tags conservatively, and supports real LangChain streaming for streamed requests.
 7. Tests: active and expected to pass.
 
 Likely next work:

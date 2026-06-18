@@ -1454,18 +1454,100 @@ def response_tag(text: str) -> str | None:
     return None
 
 
+def fallback_response_tag(context_chunks: list[dict]) -> str:
+    """Return the conservative grounding tag when a model omits one."""
+    return "[DRIFT]" if context_chunks else "[NO INFO]"
+
+
+def ensure_response_tag(text: str, context_chunks: list[dict]) -> str:
+    """Prefix a response with a conservative grounding tag if the model omitted it."""
+    if response_tag(text):
+        return text
+    prefix = fallback_response_tag(context_chunks)
+    return f"{prefix}\n{text.lstrip()}" if text.strip() else f"{prefix}\n"
+
+
+def build_no_info_reply(question: str) -> str:
+    """Build a deterministic no-context reply in the user's likely language."""
+    spanish_markers = {
+        "como",
+        "cual",
+        "cuál",
+        "cuando",
+        "cuándo",
+        "donde",
+        "dónde",
+        "hola",
+        "nació",
+        "porque",
+        "por qué",
+        "qué",
+        "quien",
+        "quién",
+    }
+    normalized = question.lower()
+    if "¿" in question or any(marker in normalized for marker in spanish_markers):
+        return "[NO INFO]\nNo tengo información en los documentos disponibles para responder eso."
+    return "[NO INFO]\nI do not have information in the available documents to answer that."
+
+
+async def stream_static_chat_reply_as_json_lines(
+    reply: str,
+    req: ChatRequest,
+    user: dict,
+    audit_record: dict,
+):
+    """Stream a backend-generated reply and persist it like a model response."""
+    store_chat_messages(req.conversation_id, user["id"], req.messages, reply)
+    audit_record["response"] = {
+        "tag": response_tag(reply),
+        "length": len(reply),
+    }
+    persist_suspicious_chat_audit_log(audit_record)
+    yield json.dumps({"text": reply, "done": False}) + "\n"
+    yield json.dumps({"text": "", "done": True}) + "\n"
+
+
 async def stream_chat_as_json_lines(
     model: dict,
     messages: list[Message],
     req: ChatRequest,
     user: dict,
     audit_record: dict,
+    context_chunks: list[dict],
 ):
     """Stream chat chunks as newline-delimited JSON and persist the final reply."""
     reply_parts = []
+    prefix_checked = False
+    buffered_start = ""
+    possible_tags = ("[RAG]", "[DRIFT]", "[NO INFO]")
+
     async for piece in generate_ai_reply_stream(model, messages):
+        if not prefix_checked:
+            buffered_start += piece
+            stripped_start = buffered_start.lstrip()
+            if response_tag(buffered_start):
+                prefix_checked = True
+                reply_parts.append(buffered_start)
+                yield json.dumps({"text": buffered_start, "done": False}) + "\n"
+                buffered_start = ""
+            elif any(tag.startswith(stripped_start) for tag in possible_tags):
+                continue
+            else:
+                prefix_checked = True
+                tagged_start = ensure_response_tag(buffered_start, context_chunks)
+                reply_parts.append(tagged_start)
+                yield json.dumps({"text": tagged_start, "done": False}) + "\n"
+                buffered_start = ""
+            continue
+
         reply_parts.append(piece)
         yield json.dumps({"text": piece, "done": False}) + "\n"
+
+    if not prefix_checked and buffered_start:
+        tagged_start = ensure_response_tag(buffered_start, context_chunks)
+        reply_parts.append(tagged_start)
+        yield json.dumps({"text": tagged_start, "done": False}) + "\n"
 
     reply = "".join(reply_parts)
     store_chat_messages(req.conversation_id, user["id"], req.messages, reply)
@@ -2110,13 +2192,33 @@ async def chat(
     ai_messages = build_chat_messages_with_all_visible_chunks(req, user, context_chunks)
     audit_record = build_chat_audit_record(req, user, model, question, safety, context_chunks)
 
+    if not context_chunks:
+        reply = build_no_info_reply(question)
+        if req.stream:
+            return StreamingResponse(
+                stream_static_chat_reply_as_json_lines(reply, req, user, audit_record),
+                media_type="application/x-ndjson",
+            )
+        store_chat_messages(req.conversation_id, user["id"], req.messages, reply)
+        audit_record["response"] = {
+            "tag": response_tag(reply),
+            "length": len(reply),
+        }
+        persist_suspicious_chat_audit_log(audit_record)
+        return {
+            "model": model["id"],
+            "tag": response_tag(reply),
+            "message": {"role": "assistant", "content": reply},
+        }
+
     if req.stream:
         return StreamingResponse(
-            stream_chat_as_json_lines(model, ai_messages, req, user, audit_record),
+            stream_chat_as_json_lines(model, ai_messages, req, user, audit_record, context_chunks),
             media_type="application/x-ndjson",
         )
 
     reply = await generate_ai_reply(model, ai_messages)
+    reply = ensure_response_tag(reply, context_chunks)
     store_chat_messages(req.conversation_id, user["id"], req.messages, reply)
 
     audit_record["response"] = {

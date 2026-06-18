@@ -387,6 +387,52 @@ class CoreEndpointTests(unittest.TestCase):
             self.server.resolve_model = original_resolve
             self.server.generate_ai_reply = original_generate
 
+    def test_chat_adds_no_info_tag_when_model_omits_grounding_tag(self):
+        """Function for test chat adds no info tag when model omits grounding tag."""
+        def fake_resolve_model(selection):
+            """Resolve any fake model selection for tests."""
+            return {"id": selection, "provider": "fake", "model": selection}
+
+        async def fake_generate_ai_reply(_model, messages):
+            """Return deterministic fake model output for tests."""
+            if "Return ONLY valid JSON" in messages[-1].content:
+                return json.dumps(
+                    {
+                        "label": "SAFE",
+                        "confidence": 0.05,
+                        "summary": "Ordinary question.",
+                        "signals": [],
+                        "evidence": [],
+                    }
+                )
+            return "There is not enough information."
+
+        original_resolve = self.server.resolve_model
+        original_generate = self.server.generate_ai_reply
+        self.server.resolve_model = fake_resolve_model
+        self.server.generate_ai_reply = fake_generate_ai_reply
+        try:
+            token = self.login()
+            response = self.client.post(
+                "/chat",
+                headers=self.auth_headers(token),
+                json={
+                    "model": "fake:test",
+                    "stream": False,
+                    "messages": [{"role": "user", "content": "What do we know?"}],
+                },
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            data = response.json()
+            self.assertEqual(data["tag"], "[NO INFO]")
+            self.assertEqual(
+                data["message"]["content"],
+                "[NO INFO]\nI do not have information in the available documents to answer that.",
+            )
+        finally:
+            self.server.resolve_model = original_resolve
+            self.server.generate_ai_reply = original_generate
+
     def test_chat_audit_rotation_keeps_up_to_500_files(self):
         """Function for test chat audit rotation keeps up to 500 files."""
         self.server.LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -475,9 +521,14 @@ class CoreEndpointTests(unittest.TestCase):
         original_resolve = self.server.resolve_model
         original_generate = self.server.generate_ai_reply
         original_stream = self.server.generate_ai_reply_stream
+        original_context = self.server.load_visible_context_chunks
         self.server.resolve_model = fake_resolve_model
         self.server.generate_ai_reply = fake_generate_ai_reply
         self.server.generate_ai_reply_stream = fake_generate_ai_reply_stream
+        self.server.load_visible_context_chunks = lambda _user, _model=None: asyncio.sleep(
+            0,
+            result=[{"source": "test#0000", "text": "Streaming context for endpoint testing."}],
+        )
         try:
             token = self.login()
             conv_response = self.client.post(
@@ -516,6 +567,85 @@ class CoreEndpointTests(unittest.TestCase):
             stored = conversation_response.json()["messages"]
             self.assertEqual(stored[-1]["role"], "assistant")
             self.assertEqual(stored[-1]["content"], "[RAG]\nHello from streaming.")
+        finally:
+            self.server.resolve_model = original_resolve
+            self.server.generate_ai_reply = original_generate
+            self.server.generate_ai_reply_stream = original_stream
+            self.server.load_visible_context_chunks = original_context
+
+    def test_chat_stream_adds_no_info_tag_when_model_omits_grounding_tag(self):
+        """Function for test chat stream adds no info tag when model omits grounding tag."""
+        def fake_resolve_model(selection):
+            """Resolve any fake model selection for tests."""
+            return {"id": selection, "provider": "fake", "model": selection}
+
+        async def fake_generate_ai_reply(_model, messages):
+            """Return deterministic fake model output for tests."""
+            if "Return ONLY valid JSON" in messages[-1].content:
+                return json.dumps(
+                    {
+                        "label": "SAFE",
+                        "confidence": 0.05,
+                        "summary": "Ordinary question.",
+                        "signals": [],
+                        "evidence": [],
+                    }
+                )
+            return "non-stream fallback"
+
+        async def fake_generate_ai_reply_stream(_model, _messages):
+            """Yield deterministic fake streaming model output for tests."""
+            yield "Hello"
+            yield " without"
+            yield " tag."
+
+        original_resolve = self.server.resolve_model
+        original_generate = self.server.generate_ai_reply
+        original_stream = self.server.generate_ai_reply_stream
+        self.server.resolve_model = fake_resolve_model
+        self.server.generate_ai_reply = fake_generate_ai_reply
+        self.server.generate_ai_reply_stream = fake_generate_ai_reply_stream
+        try:
+            token = self.login()
+            conv_response = self.client.post(
+                "/conversations",
+                headers=self.auth_headers(token),
+                json={"title": "Streaming fallback test", "model": "fake:test"},
+            )
+            self.assertEqual(conv_response.status_code, 200, conv_response.text)
+            conversation_id = conv_response.json()["id"]
+
+            with self.client.stream(
+                "POST",
+                "/chat",
+                headers=self.auth_headers(token),
+                json={
+                    "model": "fake:test",
+                    "stream": True,
+                    "conversation_id": conversation_id,
+                    "messages": [{"role": "user", "content": "Stream this answer"}],
+                },
+            ) as response:
+                self.assertEqual(response.status_code, 200)
+                chunks = [json.loads(line) for line in response.iter_lines() if line]
+
+            self.assertEqual(
+                [chunk["text"] for chunk in chunks],
+                ["[NO INFO]\nI do not have information in the available documents to answer that.", ""],
+            )
+            self.assertTrue(chunks[-1]["done"])
+
+            conversation_response = self.client.get(
+                f"/conversations/{conversation_id}",
+                headers=self.auth_headers(token),
+            )
+            self.assertEqual(conversation_response.status_code, 200, conversation_response.text)
+            stored = conversation_response.json()["messages"]
+            self.assertEqual(stored[-1]["role"], "assistant")
+            self.assertEqual(
+                stored[-1]["content"],
+                "[NO INFO]\nI do not have information in the available documents to answer that.",
+            )
         finally:
             self.server.resolve_model = original_resolve
             self.server.generate_ai_reply = original_generate
