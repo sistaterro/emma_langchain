@@ -196,6 +196,8 @@ password: admin1234
 - `http://localhost:8000/ui/admin.html` - admin panel
 - `http://localhost:8000/ui/Docs.html` - built-in documentation
 
+The home screen opens main entry cards in a new tab/window for easier navigation. On secondary screens, click the existing Emma logo/status area in the upper sidebar to return to the home screen.
+
 ---
 
 ## How RAG Works Now

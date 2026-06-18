@@ -72,6 +72,7 @@
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
       gap: 9px;
+      cursor: pointer;
     }
 
     .hal-eye {
@@ -624,7 +625,7 @@
 
   <!-- SIDEBAR -->
   <div id="sidebar">
-    <div class="hal-wrap">
+    <div class="hal-wrap" onclick="window.location.href='/ui/index.html'" role="link" tabindex="0" title="Home" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href='/ui/index.html';}">
       <div class="hal-eye">
         <div class="ring"></div>
         <div class="ring2"></div>
@@ -976,6 +977,9 @@ uvicorn server:app --reload --port 8000</code></pre>
           </tbody>
         </table>
       </div>
+
+      <h3>Navigation pattern</h3>
+      <p>The home screen opens main entry cards in a new browser tab or window. On secondary screens, the existing Emma logo/status surface in the upper sidebar returns to <code>index.html</code> without adding a separate floating home button.</p>
 
       <h3>Core functions</h3>
       <div class="fn-table-wrap">

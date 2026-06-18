@@ -82,6 +82,7 @@
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
       gap: 9px;
+      cursor: pointer;
     }
 
     .hal-eye {
@@ -771,7 +772,7 @@
 
     <!-- SIDEBAR -->
     <div id="sidebar">
-      <div class="hal-wrap">
+      <div class="hal-wrap" onclick="window.location.href='/ui/index.html'" role="link" tabindex="0" title="Home" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href='/ui/index.html';}">
         <div class="hal-eye">
           <div class="ring"></div>
           <div class="ring2"></div>

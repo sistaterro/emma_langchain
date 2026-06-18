@@ -203,6 +203,7 @@ Practical rule:
 - Solve responsiveness with measured, concrete changes, not complete rewrites.
 - When cards or grids are conditionally shown by role, ensure stable centering and layout even when the number of visible items changes.
 - On the home screen, preserve the 2-column card grid for wide responsive layouts so admin users see two rows with two entries.
+- Home-screen entry cards should open their destination in a new browser tab/window. On secondary screens, the existing logo/status surface in the upper sidebar should be clickable and return to `ui/index.html`; do not add a separate floating home button.
 - If a screen does not apply to a role, hide it and block direct access when appropriate.
 - Visible UI version references currently use Emma 2.0.
 
